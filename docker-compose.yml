@@ -1,0 +1,254 @@
+# ClinixAI Docker Compose - Local Development Stack
+# Run: docker-compose up -d
+# Stop: docker-compose down
+
+version: '3.8'
+
+services:
+  # ==================== DATABASES ====================
+  
+  # PostgreSQL - Primary Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: clinixai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: clinixai
+      POSTGRES_USER: clinixai_user
+      POSTGRES_PASSWORD: clinixai_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/database/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clinixai_user -d clinixai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - clinixai-network
+
+  # Redis - Caching & Session Management
+  redis:
+    image: redis:7-alpine
+    container_name: clinixai-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - clinixai-network
+
+  # ==================== BACKEND SERVICES ====================
+
+  # API Gateway (Node.js)
+  api-gateway:
+    build:
+      context: ./backend/api-gateway
+      dockerfile: Dockerfile
+    container_name: clinixai-api-gateway
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgresql://clinixai_user:clinixai_dev_password@postgres:5432/clinixai
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      TRIAGE_SERVICE_URL: http://triage-service:8000
+      EHR_BRIDGE_URL: http://ehr-bridge:3001
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/api-gateway:/app
+      - /app/node_modules
+    networks:
+      - clinixai-network
+
+  # Triage Service (Python/FastAPI) - LangGraph AI Orchestration
+  triage-service:
+    build:
+      context: ./backend/triage-service
+      dockerfile: Dockerfile
+    container_name: clinixai-triage-service
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql://clinixai_user:clinixai_dev_password@postgres:5432/clinixai
+      REDIS_URL: redis://redis:6379
+      # Ollama Configuration (Primary - Team Collaboration)
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      # AI Provider API Keys (Fallbacks)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-your-openai-key}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-your-anthropic-key}
+      HUGGINGFACE_API_KEY: ${HUGGINGFACE_API_KEY:-your-huggingface-key}
+      # Qwen Model Configuration (HuggingFace Inference Endpoints - Fallback)
+      QWEN_ENDPOINT_URL: ${QWEN_ENDPOINT_URL:-}
+      QWEN_MODEL: ${QWEN_MODEL:-qwen2.5-7b}
+      # LiquidAI Model Configuration (HuggingFace Inference Endpoints)
+      LIQUID_ENDPOINT_URL: ${LIQUID_ENDPOINT_URL:-}
+      LIQUID_MODEL: ${LIQUID_MODEL:-lfm-7b}
+      # AI Provider Priority (ollama first for team collaboration)
+      AI_PROVIDER_PRIORITY: ${AI_PROVIDER_PRIORITY:-ollama,qwen,liquid,huggingface,openai,anthropic}
+      # LangGraph Configuration
+      AI_CLOUD_RISK_THRESHOLD: ${AI_CLOUD_RISK_THRESHOLD:-0.6}
+      AI_CLOUD_COMPLEXITY_THRESHOLD: ${AI_CLOUD_COMPLEXITY_THRESHOLD:-0.5}
+      AI_PREFER_LOCAL: ${AI_PREFER_LOCAL:-true}
+      # Local LLM Configuration
+      LOCAL_LLM_BACKEND: ${LOCAL_LLM_BACKEND:-ollama}
+      LOCAL_LLM_MAX_TOKENS: ${LOCAL_LLM_MAX_TOKENS:-512}
+      LOCAL_LLM_TEMPERATURE: ${LOCAL_LLM_TEMPERATURE:-0.3}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/triage-service:/app
+      - ./models:/app/models
+    networks:
+      - clinixai-network
+
+  # EHR Bridge Service (Node.js + HAPI FHIR)
+  ehr-bridge:
+    build:
+      context: ./backend/ehr-bridge
+      dockerfile: Dockerfile
+    container_name: clinixai-ehr-bridge
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://clinixai_user:clinixai_dev_password@postgres:5432/clinixai
+      FHIR_SERVER_URL: http://hapi-fhir:8080/fhir
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/ehr-bridge:/app
+      - /app/node_modules
+    networks:
+      - clinixai-network
+
+  # HAPI FHIR Server (for EHR interoperability)
+  hapi-fhir:
+    image: hapiproject/hapi:v7.0.3
+    container_name: clinixai-hapi-fhir
+    restart: unless-stopped
+    environment:
+      hapi.fhir.default_encoding: json
+      hapi.fhir.allow_multiple_delete: true
+      hapi.fhir.reuse_cached_search_results_millis: 60000
+    ports:
+      - "8080:8080"
+    volumes:
+      - hapi_data:/data/hapi
+    networks:
+      - clinixai-network
+
+  # ==================== MONITORING ====================
+
+  # Adminer - Database GUI
+  adminer:
+    image: adminer:latest
+    container_name: clinixai-adminer
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    depends_on:
+      - postgres
+    networks:
+      - clinixai-network
+
+  # Redis Commander - Redis GUI
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: clinixai-redis-commander
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8082:8081"
+    depends_on:
+      - redis
+    networks:
+      - clinixai-network
+
+  # ==================== OLLAMA AI INFERENCE ====================
+  # Ollama provides easy model management with OpenAI-compatible API
+  # Works great on Windows/WSL for team collaboration
+  
+  ollama:
+    image: ollama/ollama:latest
+    container_name: clinixai-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+      OLLAMA_ORIGINS: "*"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - clinixai-network
+
+  # OpenWebUI - Web interface for Ollama (optional)
+  # Access at http://localhost:8085
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: clinixai-open-webui
+    restart: unless-stopped
+    profiles:
+      - webui
+    ports:
+      - "8085:8080"
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      WEBUI_AUTH: "false"
+    volumes:
+      - openwebui_data:/app/backend/data
+    depends_on:
+      - ollama
+    networks:
+      - clinixai-network
+
+# ==================== VOLUMES ====================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  hapi_data:
+    driver: local
+  ollama_data:
+    driver: local
+  openwebui_data:
+    driver: local
+
+# ==================== NETWORKS ====================
+networks:
+  clinixai-network:
+    driver: bridge

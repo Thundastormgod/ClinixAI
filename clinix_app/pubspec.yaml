@@ -1,0 +1,67 @@
+name: clinix_app
+description: ClinixAI Emergency Triage Tool - AI-powered healthcare for Africa
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State Management
+  flutter_riverpod: ^2.4.9
+  riverpod_annotation: ^2.3.3
+
+  # Local Database (Offline-First)
+  isar: ^3.1.0+1
+  isar_flutter_libs: ^3.1.0+1
+  path_provider: ^2.1.1
+
+  # Security & Encryption
+  flutter_secure_storage: ^9.0.0
+  encrypt: ^5.0.3
+
+  # Networking (for Hybrid Mode)
+  dio: ^5.4.0
+  connectivity_plus: ^5.0.2
+
+  # Utilities
+  uuid: ^4.2.2
+  intl: ^0.18.1
+  equatable: ^2.0.5
+  json_annotation: ^4.8.1
+  flutter_dotenv: ^5.1.0
+
+  # UI Components
+  cupertino_icons: ^1.0.6
+
+  # Cactus SDK for On-Device LLM and STT
+  # Built-in model downloading, Qwen LLM, Whisper STT, RAG, Embeddings
+  cactus: ^1.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.1
+  build_runner: ^2.4.8
+  isar_generator: ^3.1.0+1
+  json_serializable: ^6.7.1
+  riverpod_generator: ^2.3.9
+  mockito: ^5.4.4
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/models/
+    - assets/images/
+    - .env
+
+  fonts:
+    - family: NothingSans
+      fonts:
+        - asset: assets/fonts/NothingSans-Regular.ttf
+        - asset: assets/fonts/NothingSans-Bold.ttf
+          weight: 700
