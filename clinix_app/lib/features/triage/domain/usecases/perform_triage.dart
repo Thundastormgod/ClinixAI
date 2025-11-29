@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import '../../../../core/ai/cactus_service.dart';
 import '../../../../core/ai/hybrid_router.dart';
+import '../../../../core/ai/knowledge_base_service.dart';
 import '../../../../core/database/local_database.dart';
 
 /// Perform Triage Use Case
@@ -11,9 +12,10 @@ import '../../../../core/database/local_database.dart';
 /// 1. Create a session
 /// 2. Record symptoms
 /// 3. Route to appropriate AI (local/cloud) based on risk/complexity
-/// 4. Run AI inference with RAG if patient has history
-/// 5. Save results
-/// 6. Return triage outcome
+/// 4. Run AI inference with RAG knowledge base for medical context
+/// 5. Include patient history in RAG context
+/// 6. Save results with source attributions
+/// 7. Return triage outcome
 /// 
 /// Routing Logic (from HybridRouter):
 /// - Critical symptoms → Cloud AI (GPT-4o, Claude 3.5 Sonnet)
@@ -25,14 +27,17 @@ class PerformTriageUseCase {
   final HybridRouter _router;
   final CactusService _cactusService;
   final LocalDatabase _database;
+  final KnowledgeBaseService _knowledgeBase;
 
   PerformTriageUseCase({
     HybridRouter? router,
     CactusService? cactusService,
     LocalDatabase? database,
+    KnowledgeBaseService? knowledgeBase,
   })  : _router = router ?? HybridRouter.instance,
         _cactusService = cactusService ?? CactusService(),
-        _database = database ?? LocalDatabase.instance;
+        _database = database ?? LocalDatabase.instance,
+        _knowledgeBase = knowledgeBase ?? KnowledgeBaseService.instance;
 
   /// Execute the triage flow with intelligent hybrid routing
   /// 
@@ -76,14 +81,28 @@ class PerformTriageUseCase {
     // Step 5: Get patient profile for context and RAG
     final profile = await _database.getPatientProfile();
     
-    // Step 6: Load patient history into RAG if available
+    // Step 6: Get medical knowledge context from Knowledge Base
+    RAGContext? medicalContext;
+    List<String> sourceAttributions = [];
+    if (_knowledgeBase.isInitialized) {
+      medicalContext = await _knowledgeBase.getContextForQuery(
+        symptomText,
+        maxChunks: 5,
+        maxTokens: 1500,
+      );
+      if (medicalContext.hasContext) {
+        sourceAttributions = medicalContext.attributions;
+      }
+    }
+    
+    // Step 7: Load patient history into RAG if available
     String? patientId;
     if (profile != null) {
       patientId = profile.id.toString();
       await _loadPatientHistoryToRAG(profile);
     }
 
-    // Step 7: Run HYBRID AI inference (local/cloud routing)
+    // Step 8: Run HYBRID AI inference (local/cloud routing) with medical context
     final hybridResult = await _router.runHybridTriage(
       symptoms: symptomText,
       patientAge: profile?.age,
@@ -93,9 +112,10 @@ class PerformTriageUseCase {
       patientId: patientId,
       forceLocal: input.forceLocal,
       forceCloud: input.forceCloud,
+      medicalContext: medicalContext?.context, // Include KB context
     );
 
-    // Step 8: Parse AI response and create result
+    // Step 9: Parse AI response and create result
     LocalTriageResult result;
 
     if (hybridResult.success) {
@@ -105,6 +125,10 @@ class PerformTriageUseCase {
         // Add routing metadata
         result.aiModelVersion = hybridResult.modelUsed;
         result.escalatedToCloud = hybridResult.wasEscalated;
+        // Add source attributions for transparency
+        if (sourceAttributions.isNotEmpty) {
+          result.sourceAttributions = sourceAttributions;
+        }
       } catch (e) {
         // If JSON parsing fails, create a default result
         result = _createDefaultResult(sessionId, hybridResult.response, hybridResult.modelUsed);
@@ -114,14 +138,14 @@ class PerformTriageUseCase {
       result = _createErrorResult(sessionId, hybridResult.error ?? 'Unknown error');
     }
 
-    // Step 9: Save result
+    // Step 10: Save result
     await _database.saveTriageResult(result);
 
-    // Step 10: Complete the session
+    // Step 11: Complete the session
     session.complete();
     await _database.updateTriageSession(session);
 
-    // Step 11: Return outcome with routing info
+    // Step 12: Return outcome with routing info and attributions
     return TriageOutcome(
       session: session,
       symptoms: symptoms,
@@ -132,13 +156,13 @@ class PerformTriageUseCase {
       wasEscalated: hybridResult.wasEscalated,
       localConfidence: hybridResult.localConfidence,
       cloudConfidence: hybridResult.cloudConfidence,
+      sourceAttributions: sourceAttributions,
     );
   }
 
-  /// Load patient's medical history into RAG for personalized triage
+  /// Load patient's medical history into Knowledge Base for personalized triage
   Future<void> _loadPatientHistoryToRAG(LocalPatientProfile profile) async {
-    if (!_cactusService.isRAGInitialized) {
-      // RAG is initialized automatically with RAG-enabled model config
+    if (!_knowledgeBase.isInitialized) {
       return;
     }
     
@@ -146,37 +170,59 @@ class PerformTriageUseCase {
     
     // Add chronic conditions
     if (profile.chronicConditions != null && profile.chronicConditions!.isNotEmpty) {
-      await _cactusService.addRAGDocument(
-        fileName: '${patientId}_chronic',
+      await _knowledgeBase.addDocument(
+        documentId: '${patientId}_chronic',
+        title: 'Patient Chronic Conditions',
+        source: 'Patient Profile',
+        documentType: RAGDocumentType.patientHistory,
         content: 'Patient has chronic conditions: ${profile.chronicConditions!.join(", ")}',
+        isSystemDocument: false,
+        generateEmbeddings: _cactusService.isLMLoaded,
       );
     }
     
     // Add allergies
     if (profile.allergies != null && profile.allergies!.isNotEmpty) {
-      await _cactusService.addRAGDocument(
-        fileName: '${patientId}_allergies',
-        content: 'Patient has allergies to: ${profile.allergies!.join(", ")}',
+      await _knowledgeBase.addDocument(
+        documentId: '${patientId}_allergies',
+        title: 'Patient Allergies',
+        source: 'Patient Profile',
+        documentType: RAGDocumentType.patientHistory,
+        content: 'Patient has allergies to: ${profile.allergies!.join(", ")}. '
+            'These allergies must be considered when recommending treatments or medications.',
+        isSystemDocument: false,
+        generateEmbeddings: _cactusService.isLMLoaded,
       );
     }
     
     // Add current medications
     if (profile.currentMedications != null && profile.currentMedications!.isNotEmpty) {
-      await _cactusService.addRAGDocument(
-        fileName: '${patientId}_medications',
-        content: 'Patient is currently taking: ${profile.currentMedications!.join(", ")}',
+      await _knowledgeBase.addDocument(
+        documentId: '${patientId}_medications',
+        title: 'Patient Current Medications',
+        source: 'Patient Profile',
+        documentType: RAGDocumentType.patientHistory,
+        content: 'Patient is currently taking: ${profile.currentMedications!.join(", ")}. '
+            'Check for potential drug interactions with any new recommendations.',
+        isSystemDocument: false,
+        generateEmbeddings: _cactusService.isLMLoaded,
       );
     }
     
     // Add demographic info
-    final demoBuffer = StringBuffer('Patient profile: ');
+    final demoBuffer = StringBuffer('Patient demographics: ');
     if (profile.gender != null) demoBuffer.write('${profile.gender}, ');
     if (profile.age != null) demoBuffer.write('${profile.age} years old, ');
     if (profile.bloodType != null) demoBuffer.write('blood type ${profile.bloodType}');
     
-    await _cactusService.addRAGDocument(
-      fileName: '${patientId}_demographics',
+    await _knowledgeBase.addDocument(
+      documentId: '${patientId}_demographics',
+      title: 'Patient Demographics',
+      source: 'Patient Profile',
+      documentType: RAGDocumentType.patientHistory,
       content: demoBuffer.toString(),
+      isSystemDocument: false,
+      generateEmbeddings: _cactusService.isLMLoaded,
     );
   }
 
@@ -286,6 +332,7 @@ class TriageOutcome {
   final bool wasEscalated;
   final double? localConfidence;
   final double? cloudConfidence;
+  final List<String> sourceAttributions;
 
   TriageOutcome({
     required this.session,
@@ -297,6 +344,7 @@ class TriageOutcome {
     this.wasEscalated = false,
     this.localConfidence,
     this.cloudConfidence,
+    this.sourceAttributions = const [],
   });
 
   /// Check if triage was successful
@@ -304,6 +352,15 @@ class TriageOutcome {
   
   /// Check if cloud was used
   bool get usedCloud => routeUsed == RouteDecision.cloud || wasEscalated;
+  
+  /// Check if knowledge base was used
+  bool get usedKnowledgeBase => sourceAttributions.isNotEmpty;
+
+  /// Get formatted source attributions for display
+  String get formattedSources {
+    if (sourceAttributions.isEmpty) return '';
+    return '\n📚 Medical Sources:\n${sourceAttributions.map((s) => '• $s').join('\n')}';
+  }
 
   /// Get a summary for display
   String get summary => '''
@@ -315,6 +372,7 @@ Confidence: ${(result.confidenceScore * 100).toStringAsFixed(0)}%
 Inference Time: ${inferenceTimeMs}ms
 Route: ${_routeDescription}
 Model: $modelUsed
+Knowledge Base: ${usedKnowledgeBase ? '✓ Used' : 'Not used'}
 
 Assessment:
 ${result.primaryAssessment}
@@ -324,7 +382,7 @@ ${result.recommendedAction}
 
 Possible Conditions:
 ${result.differentialDiagnoses.map((d) => '• ${d.condition}').join('\n')}
-
+$formattedSources
 ⚠️ ${result.disclaimer}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ''';

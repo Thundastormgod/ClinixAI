@@ -6,11 +6,13 @@ import 'collections/local_patient_profile.dart';
 import 'collections/local_triage_session.dart';
 import 'collections/local_symptom.dart';
 import 'collections/local_triage_result.dart';
+import 'collections/local_rag_document.dart';
 
 export 'collections/local_patient_profile.dart';
 export 'collections/local_triage_session.dart';
 export 'collections/local_symptom.dart';
 export 'collections/local_triage_result.dart';
+export 'collections/local_rag_document.dart';
 
 /// ClinixAI Local Database Service
 /// 
@@ -57,6 +59,8 @@ class LocalDatabase {
           LocalTriageSessionSchema,
           LocalSymptomSchema,
           LocalTriageResultSchema,
+          LocalRAGDocumentSchema,
+          LocalRAGChunkSchema,
         ],
         directory: dir.path,
         name: 'clinixai_local',

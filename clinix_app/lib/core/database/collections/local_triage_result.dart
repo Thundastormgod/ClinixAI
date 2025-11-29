@@ -55,11 +55,32 @@ class LocalTriageResult {
   /// Glyph signal to display (for Nothing Phone)
   String? glyphSignal; // 'critical_flash', 'urgent_pulse', 'standard_glow'
 
+  /// JSON string of source attributions from knowledge base
+  /// Format: ["WHO Emergency Triage Guidelines", "Common Symptoms Guide"]
+  String? sourceAttributionsJson;
+
   /// Disclaimer text
   String disclaimer = 'This is an AI-assisted assessment. Always consult a healthcare professional for medical advice.';
 
   /// When was this result generated
   DateTime createdAt = DateTime.now();
+
+  /// Parse source attributions from JSON
+  @ignore
+  List<String> get sourceAttributions {
+    if (sourceAttributionsJson == null) return [];
+    try {
+      final list = jsonDecode(sourceAttributionsJson!) as List;
+      return list.cast<String>();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /// Set source attributions as JSON
+  set sourceAttributions(List<String> attributions) {
+    sourceAttributionsJson = jsonEncode(attributions);
+  }
 
   /// Parse differential diagnoses from JSON
   @ignore

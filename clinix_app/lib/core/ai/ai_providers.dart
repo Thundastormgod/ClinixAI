@@ -5,6 +5,8 @@ import 'cactus_service.dart';
 import 'huggingface_service.dart';
 import 'openrouter_service.dart';
 import 'hybrid_router.dart';
+import 'knowledge_base_service.dart';
+import '../database/local_database.dart';
 
 /// AI Service Configuration Provider
 final aiServiceConfigProvider = Provider<AIServiceConfig>((ref) {
@@ -340,4 +342,210 @@ class ModelDownloadState {
 
 final modelDownloadProvider = StateProvider<ModelDownloadState>((ref) {
   return const ModelDownloadState();
+});
+
+// =============================================================================
+// KNOWLEDGE BASE PROVIDERS
+// =============================================================================
+
+/// Knowledge Base Service Instance
+final _knowledgeBaseInstance = KnowledgeBaseService.instance;
+
+/// Knowledge Base Service Provider
+final knowledgeBaseServiceProvider = Provider<KnowledgeBaseService>((ref) {
+  return _knowledgeBaseInstance;
+});
+
+/// Knowledge Base Initialization Provider
+/// Initializes the knowledge base with Isar and Cactus dependencies
+final knowledgeBaseReadyProvider = FutureProvider<bool>((ref) async {
+  final kb = ref.watch(knowledgeBaseServiceProvider);
+  if (kb.isInitialized) return true;
+  
+  try {
+    final database = LocalDatabase.instance;
+    final cactus = ref.watch(cactusServiceProvider);
+    
+    // Ensure database is ready
+    if (!database.isReady) {
+      await database.initialize();
+    }
+    
+    // Initialize knowledge base
+    await kb.initialize(
+      isar: database.isar,
+      cactusService: cactus,
+    );
+    
+    return true;
+  } catch (e) {
+    return false;
+  }
+});
+
+/// Knowledge Base Loading Provider (loads bundled medical documents)
+final knowledgeBaseLoadedProvider = FutureProvider<bool>((ref) async {
+  // Ensure KB is initialized first
+  final isReady = await ref.watch(knowledgeBaseReadyProvider.future);
+  if (!isReady) return false;
+  
+  final kb = ref.watch(knowledgeBaseServiceProvider);
+  
+  try {
+    // Load bundled medical knowledge base
+    await kb.loadBundledKnowledgeBase();
+    return true;
+  } catch (e) {
+    return false;
+  }
+});
+
+/// Knowledge Base Stats Provider
+final knowledgeBaseStatsProvider = FutureProvider<KnowledgeBaseStats?>((ref) async {
+  final isReady = await ref.watch(knowledgeBaseReadyProvider.future);
+  if (!isReady) return null;
+  
+  final kb = ref.watch(knowledgeBaseServiceProvider);
+  return kb.getStats();
+});
+
+/// Knowledge Base Status Provider (for UI)
+final knowledgeBaseStatusProvider = Provider<Map<String, dynamic>>((ref) {
+  final kb = ref.watch(knowledgeBaseServiceProvider);
+  
+  return {
+    'isInitialized': kb.isInitialized,
+    'isLoading': kb.isLoading,
+    'documentCount': kb.documentCount,
+    'chunkCount': kb.chunkCount,
+  };
+});
+
+/// RAG Search Provider - performs semantic search on knowledge base
+class RAGSearchNotifier extends StateNotifier<RAGSearchState> {
+  final KnowledgeBaseService _kb;
+  
+  RAGSearchNotifier(this._kb) : super(const RAGSearchState());
+  
+  /// Search the knowledge base
+  Future<List<RAGSearchResult>> search(String query, {int limit = 5}) async {
+    if (!_kb.isInitialized) {
+      state = state.copyWith(error: 'Knowledge base not initialized');
+      return [];
+    }
+    
+    state = state.copyWith(isSearching: true, error: null);
+    
+    try {
+      final results = await _kb.search(query, limit: limit);
+      state = state.copyWith(
+        isSearching: false,
+        results: results,
+        lastQuery: query,
+      );
+      return results;
+    } catch (e) {
+      state = state.copyWith(
+        isSearching: false,
+        error: e.toString(),
+      );
+      return [];
+    }
+  }
+  
+  /// Get context for a query (for RAG-augmented generation)
+  Future<RAGContext?> getContext(String query, {int maxChunks = 5}) async {
+    if (!_kb.isInitialized) return null;
+    
+    try {
+      return await _kb.getContextForQuery(query, maxChunks: maxChunks);
+    } catch (e) {
+      return null;
+    }
+  }
+  
+  void clear() {
+    state = const RAGSearchState();
+  }
+}
+
+/// RAG Search State
+class RAGSearchState {
+  final bool isSearching;
+  final List<RAGSearchResult> results;
+  final String? lastQuery;
+  final String? error;
+
+  const RAGSearchState({
+    this.isSearching = false,
+    this.results = const [],
+    this.lastQuery,
+    this.error,
+  });
+
+  RAGSearchState copyWith({
+    bool? isSearching,
+    List<RAGSearchResult>? results,
+    String? lastQuery,
+    String? error,
+  }) {
+    return RAGSearchState(
+      isSearching: isSearching ?? this.isSearching,
+      results: results ?? this.results,
+      lastQuery: lastQuery ?? this.lastQuery,
+      error: error,
+    );
+  }
+}
+
+/// RAG Search Provider
+final ragSearchProvider = StateNotifierProvider<RAGSearchNotifier, RAGSearchState>((ref) {
+  final kb = ref.watch(knowledgeBaseServiceProvider);
+  return RAGSearchNotifier(kb);
+});
+
+/// RAG-Augmented Triage Provider
+/// Combines knowledge base search with triage analysis
+final ragAugmentedTriageProvider = FutureProvider.family<String?, String>((ref, symptoms) async {
+  final kb = ref.watch(knowledgeBaseServiceProvider);
+  final cactus = ref.watch(cactusServiceProvider);
+  
+  if (!kb.isInitialized || !cactus.isLMLoaded) {
+    return null;
+  }
+  
+  try {
+    // Get relevant medical context
+    final context = await kb.getContextForQuery(symptoms, maxChunks: 5);
+    
+    if (!context.hasContext) {
+      // No relevant context found - use standard generation
+      final result = await cactus.generateCompletion(prompt: symptoms);
+      return result.response;
+    }
+    
+    // Generate RAG-augmented response
+    final augmentedPrompt = '''Based on the following medical knowledge:
+
+${context.context}
+
+---
+
+Patient symptoms: $symptoms
+
+Please provide a triage assessment based on the above medical context.''';
+
+    final result = await cactus.generateCompletion(
+      prompt: augmentedPrompt,
+      systemPrompt: '''You are ClinixAI, a medical triage assistant with access to a curated medical knowledge base.
+Use the provided context to give accurate, evidence-based assessments.
+Always cite your sources when relevant.
+Recommend professional medical consultation for serious symptoms.''',
+    );
+    
+    // Append source attributions
+    return '${result.response}${context.formattedAttributions}';
+  } catch (e) {
+    return null;
+  }
 });

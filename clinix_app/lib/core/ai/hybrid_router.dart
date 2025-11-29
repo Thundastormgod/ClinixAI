@@ -390,6 +390,7 @@ class HybridRouter {
     List<String>? medicalHistory,
     Map<String, dynamic>? vitalSigns,
     String? patientId, // For RAG lookup
+    String? medicalContext, // Pre-retrieved knowledge base context
     bool forceLocal = false,
     bool forceCloud = false,
   }) async {
@@ -423,6 +424,7 @@ class HybridRouter {
             medicalHistory: medicalHistory,
             vitalSigns: vitalSigns,
             patientId: patientId,
+            medicalContext: medicalContext,
             stopwatch: stopwatch,
           );
           
@@ -433,6 +435,7 @@ class HybridRouter {
             patientGender: patientGender,
             medicalHistory: medicalHistory,
             vitalSigns: vitalSigns,
+            medicalContext: medicalContext,
             tier: routing.recommendedCloudTier,
             stopwatch: stopwatch,
             riskScore: routing.riskScore,
@@ -448,6 +451,7 @@ class HybridRouter {
             medicalHistory: medicalHistory,
             vitalSigns: vitalSigns,
             patientId: patientId,
+            medicalContext: medicalContext,
             tier: routing.recommendedCloudTier,
             stopwatch: stopwatch,
             riskScore: routing.riskScore,
@@ -463,6 +467,7 @@ class HybridRouter {
             medicalHistory: medicalHistory,
             vitalSigns: vitalSigns,
             patientId: patientId,
+            medicalContext: medicalContext,
             tier: routing.recommendedCloudTier,
             stopwatch: stopwatch,
             riskScore: routing.riskScore,
@@ -534,6 +539,7 @@ Respond in JSON format:
     List<String>? medicalHistory,
     Map<String, dynamic>? vitalSigns,
     String? patientId,
+    String? medicalContext,
     required Stopwatch stopwatch,
   }) async {
     // Ensure LM is loaded
@@ -543,31 +549,39 @@ Respond in JSON format:
       await _cactus!.loadLLMModel(CactusModelConfig.lfm2Rag);
     }
     
+    // Build the user prompt with optional medical context
+    String userPrompt = _buildTriageUserPrompt(
+      symptoms: symptoms,
+      patientAge: patientAge,
+      patientGender: patientGender,
+      medicalHistory: medicalHistory,
+      vitalSigns: vitalSigns,
+    );
+    
+    // Prepend medical knowledge context if available
+    if (medicalContext != null && medicalContext.isNotEmpty) {
+      userPrompt = '''Based on the following medical knowledge:
+
+$medicalContext
+
+---
+
+$userPrompt''';
+    }
+    
     // Build conversation history for context
     final conversationHistory = <Map<String, String>>[];
     
-    // Use RAG if available and patient ID provided
+    // Use RAG if available and patient ID provided (for patient-specific context)
     CactusResult result;
     if (patientId != null && _cactus!.isRAGInitialized) {
       result = await _cactus!.generateRAGResponse(
-        query: _buildTriageUserPrompt(
-          symptoms: symptoms,
-          patientAge: patientAge,
-          patientGender: patientGender,
-          medicalHistory: medicalHistory,
-          vitalSigns: vitalSigns,
-        ),
+        query: userPrompt,
         systemPrompt: _buildTriageSystemPrompt(),
       );
     } else {
       result = await _cactus!.generateCompletion(
-        prompt: _buildTriageUserPrompt(
-          symptoms: symptoms,
-          patientAge: patientAge,
-          patientGender: patientGender,
-          medicalHistory: medicalHistory,
-          vitalSigns: vitalSigns,
-        ),
+        prompt: userPrompt,
         systemPrompt: _buildTriageSystemPrompt(),
         conversationHistory: conversationHistory,
       );
@@ -602,6 +616,7 @@ Respond in JSON format:
     String? patientGender,
     List<String>? medicalHistory,
     Map<String, dynamic>? vitalSigns,
+    String? medicalContext,
     required ModelTier tier,
     required Stopwatch stopwatch,
     double? riskScore,
@@ -618,8 +633,28 @@ Respond in JSON format:
         medicalHistory: medicalHistory,
         vitalSigns: vitalSigns,
         patientId: null,
+        medicalContext: medicalContext,
         stopwatch: stopwatch,
       );
+    }
+    
+    // Build prompt with medical context for cloud
+    String cloudPrompt = _buildTriageUserPrompt(
+      symptoms: symptoms,
+      patientAge: patientAge,
+      patientGender: patientGender,
+      medicalHistory: medicalHistory,
+      vitalSigns: vitalSigns,
+    );
+    
+    if (medicalContext != null && medicalContext.isNotEmpty) {
+      cloudPrompt = '''Based on the following medical knowledge:
+
+$medicalContext
+
+---
+
+$cloudPrompt''';
     }
     
     final result = await _openRouter.runTriageInference(
@@ -662,6 +697,7 @@ Respond in JSON format:
     List<String>? medicalHistory,
     Map<String, dynamic>? vitalSigns,
     String? patientId,
+    String? medicalContext,
     required ModelTier tier,
     required Stopwatch stopwatch,
     double? riskScore,
@@ -676,6 +712,7 @@ Respond in JSON format:
       medicalHistory: medicalHistory,
       vitalSigns: vitalSigns,
       patientId: patientId,
+      medicalContext: medicalContext,
       stopwatch: Stopwatch()..start(),
     );
     
@@ -698,6 +735,7 @@ Respond in JSON format:
         patientGender: patientGender,
         medicalHistory: medicalHistory,
         vitalSigns: vitalSigns,
+        medicalContext: medicalContext,
         tier: tier,
         stopwatch: Stopwatch()..start(),
         riskScore: riskScore,
@@ -741,6 +779,7 @@ Respond in JSON format:
     List<String>? medicalHistory,
     Map<String, dynamic>? vitalSigns,
     String? patientId,
+    String? medicalContext,
     required ModelTier tier,
     required Stopwatch stopwatch,
     double? riskScore,
@@ -756,6 +795,7 @@ Respond in JSON format:
         medicalHistory: medicalHistory,
         vitalSigns: vitalSigns,
         patientId: patientId,
+        medicalContext: medicalContext,
         stopwatch: Stopwatch()..start(),
       ),
       _runCloudInference(
@@ -764,6 +804,7 @@ Respond in JSON format:
         patientGender: patientGender,
         medicalHistory: medicalHistory,
         vitalSigns: vitalSigns,
+        medicalContext: medicalContext,
         tier: tier,
         stopwatch: Stopwatch()..start(),
         riskScore: riskScore,

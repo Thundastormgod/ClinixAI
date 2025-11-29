@@ -72,9 +72,9 @@ const LocalTriageResultSchema = CollectionSchema(
       name: r'sessionId',
       type: IsarType.long,
     ),
-    r'urgencyColor': PropertySchema(
+    r'sourceAttributionsJson': PropertySchema(
       id: 11,
-      name: r'urgencyColor',
+      name: r'sourceAttributionsJson',
       type: IsarType.string,
     ),
     r'urgencyDisplayText': PropertySchema(
@@ -144,7 +144,12 @@ int _localTriageResultEstimateSize(
   }
   bytesCount += 3 + object.primaryAssessment.length * 3;
   bytesCount += 3 + object.recommendedAction.length * 3;
-  bytesCount += 3 + object.urgencyColor.length * 3;
+  {
+    final value = object.sourceAttributionsJson;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.urgencyDisplayText.length * 3;
   bytesCount += 3 + object.urgencyLevel.name.length * 3;
   return bytesCount;
@@ -167,7 +172,7 @@ void _localTriageResultSerialize(
   writer.writeString(offsets[8], object.primaryAssessment);
   writer.writeString(offsets[9], object.recommendedAction);
   writer.writeLong(offsets[10], object.sessionId);
-  writer.writeString(offsets[11], object.urgencyColor);
+  writer.writeString(offsets[11], object.sourceAttributionsJson);
   writer.writeString(offsets[12], object.urgencyDisplayText);
   writer.writeString(offsets[13], object.urgencyLevel.name);
 }
@@ -191,6 +196,7 @@ LocalTriageResult _localTriageResultDeserialize(
   object.primaryAssessment = reader.readString(offsets[8]);
   object.recommendedAction = reader.readString(offsets[9]);
   object.sessionId = reader.readLong(offsets[10]);
+  object.sourceAttributionsJson = reader.readStringOrNull(offsets[11]);
   object.urgencyLevel = _LocalTriageResulturgencyLevelValueEnumMap[
           reader.readStringOrNull(offsets[13])] ??
       UrgencyLevel.critical;
@@ -227,7 +233,7 @@ P _localTriageResultDeserializeProp<P>(
     case 10:
       return (reader.readLong(offset)) as P;
     case 11:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 12:
       return (reader.readString(offset)) as P;
     case 13:
@@ -1633,13 +1639,31 @@ extension LocalTriageResultQueryFilter
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
-      urgencyColorEqualTo(
-    String value, {
+      sourceAttributionsJsonIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'sourceAttributionsJson',
+      ));
+    });
+  }
+
+  QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
+      sourceAttributionsJsonIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'sourceAttributionsJson',
+      ));
+    });
+  }
+
+  QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
+      sourceAttributionsJsonEqualTo(
+    String? value, {
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'urgencyColor',
+        property: r'sourceAttributionsJson',
         value: value,
         caseSensitive: caseSensitive,
       ));
@@ -1647,15 +1671,15 @@ extension LocalTriageResultQueryFilter
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
-      urgencyColorGreaterThan(
-    String value, {
+      sourceAttributionsJsonGreaterThan(
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.greaterThan(
         include: include,
-        property: r'urgencyColor',
+        property: r'sourceAttributionsJson',
         value: value,
         caseSensitive: caseSensitive,
       ));
@@ -1663,15 +1687,15 @@ extension LocalTriageResultQueryFilter
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
-      urgencyColorLessThan(
-    String value, {
+      sourceAttributionsJsonLessThan(
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.lessThan(
         include: include,
-        property: r'urgencyColor',
+        property: r'sourceAttributionsJson',
         value: value,
         caseSensitive: caseSensitive,
       ));
@@ -1679,16 +1703,16 @@ extension LocalTriageResultQueryFilter
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
-      urgencyColorBetween(
-    String lower,
-    String upper, {
+      sourceAttributionsJsonBetween(
+    String? lower,
+    String? upper, {
     bool includeLower = true,
     bool includeUpper = true,
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.between(
-        property: r'urgencyColor',
+        property: r'sourceAttributionsJson',
         lower: lower,
         includeLower: includeLower,
         upper: upper,
@@ -1699,13 +1723,13 @@ extension LocalTriageResultQueryFilter
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
-      urgencyColorStartsWith(
+      sourceAttributionsJsonStartsWith(
     String value, {
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.startsWith(
-        property: r'urgencyColor',
+        property: r'sourceAttributionsJson',
         value: value,
         caseSensitive: caseSensitive,
       ));
@@ -1713,13 +1737,13 @@ extension LocalTriageResultQueryFilter
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
-      urgencyColorEndsWith(
+      sourceAttributionsJsonEndsWith(
     String value, {
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.endsWith(
-        property: r'urgencyColor',
+        property: r'sourceAttributionsJson',
         value: value,
         caseSensitive: caseSensitive,
       ));
@@ -1727,10 +1751,11 @@ extension LocalTriageResultQueryFilter
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
-      urgencyColorContains(String value, {bool caseSensitive = true}) {
+      sourceAttributionsJsonContains(String value,
+          {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.contains(
-        property: r'urgencyColor',
+        property: r'sourceAttributionsJson',
         value: value,
         caseSensitive: caseSensitive,
       ));
@@ -1738,10 +1763,11 @@ extension LocalTriageResultQueryFilter
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
-      urgencyColorMatches(String pattern, {bool caseSensitive = true}) {
+      sourceAttributionsJsonMatches(String pattern,
+          {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.matches(
-        property: r'urgencyColor',
+        property: r'sourceAttributionsJson',
         wildcard: pattern,
         caseSensitive: caseSensitive,
       ));
@@ -1749,20 +1775,20 @@ extension LocalTriageResultQueryFilter
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
-      urgencyColorIsEmpty() {
+      sourceAttributionsJsonIsEmpty() {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'urgencyColor',
+        property: r'sourceAttributionsJson',
         value: '',
       ));
     });
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterFilterCondition>
-      urgencyColorIsNotEmpty() {
+      sourceAttributionsJsonIsNotEmpty() {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.greaterThan(
-        property: r'urgencyColor',
+        property: r'sourceAttributionsJson',
         value: '',
       ));
     });
@@ -2204,16 +2230,16 @@ extension LocalTriageResultQuerySortBy
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterSortBy>
-      sortByUrgencyColor() {
+      sortBySourceAttributionsJson() {
     return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'urgencyColor', Sort.asc);
+      return query.addSortBy(r'sourceAttributionsJson', Sort.asc);
     });
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterSortBy>
-      sortByUrgencyColorDesc() {
+      sortBySourceAttributionsJsonDesc() {
     return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'urgencyColor', Sort.desc);
+      return query.addSortBy(r'sourceAttributionsJson', Sort.desc);
     });
   }
 
@@ -2416,16 +2442,16 @@ extension LocalTriageResultQuerySortThenBy
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterSortBy>
-      thenByUrgencyColor() {
+      thenBySourceAttributionsJson() {
     return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'urgencyColor', Sort.asc);
+      return query.addSortBy(r'sourceAttributionsJson', Sort.asc);
     });
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QAfterSortBy>
-      thenByUrgencyColorDesc() {
+      thenBySourceAttributionsJsonDesc() {
     return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'urgencyColor', Sort.desc);
+      return query.addSortBy(r'sourceAttributionsJson', Sort.desc);
     });
   }
 
@@ -2542,9 +2568,10 @@ extension LocalTriageResultQueryWhereDistinct
   }
 
   QueryBuilder<LocalTriageResult, LocalTriageResult, QDistinct>
-      distinctByUrgencyColor({bool caseSensitive = true}) {
+      distinctBySourceAttributionsJson({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
-      return query.addDistinctBy(r'urgencyColor', caseSensitive: caseSensitive);
+      return query.addDistinctBy(r'sourceAttributionsJson',
+          caseSensitive: caseSensitive);
     });
   }
 
@@ -2648,10 +2675,10 @@ extension LocalTriageResultQueryProperty
     });
   }
 
-  QueryBuilder<LocalTriageResult, String, QQueryOperations>
-      urgencyColorProperty() {
+  QueryBuilder<LocalTriageResult, String?, QQueryOperations>
+      sourceAttributionsJsonProperty() {
     return QueryBuilder.apply(this, (query) {
-      return query.addPropertyName(r'urgencyColor');
+      return query.addPropertyName(r'sourceAttributionsJson');
     });
   }
 
