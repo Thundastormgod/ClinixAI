@@ -235,6 +235,39 @@ services:
     networks:
       - clinixai-network
 
+  # ==================== NEO4J GRAPH DATABASE ====================
+  # Neo4j for GraphRAG - Knowledge Graph storage and queries
+  
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: clinixai-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/clinixai_neo4j_password
+      NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*,gds.*
+      NEO4J_dbms_memory_heap_initial__size: 512m
+      NEO4J_dbms_memory_heap_max__size: 1G
+    ports:
+      - "7474:7474"  # HTTP Browser
+      - "7687:7687"  # Bolt Protocol
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_import:/var/lib/neo4j/import
+      - neo4j_plugins:/plugins
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7474"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - clinixai-network
+
+  # Neo4j Browser alternative (optional lightweight UI)
+  # Access Neo4j Browser directly at http://localhost:7474
+
 # ==================== VOLUMES ====================
 volumes:
   postgres_data:
@@ -246,6 +279,14 @@ volumes:
   ollama_data:
     driver: local
   openwebui_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_import:
+    driver: local
+  neo4j_plugins:
     driver: local
 
 # ==================== NETWORKS ====================

@@ -27,6 +27,13 @@ asyncpg==0.29.0
 redis==5.0.1
 sqlalchemy[asyncio]==2.0.25
 alembic==1.13.1
+neo4j>=5.15.0
+
+# ==================== GRAPHRAG & PDF ====================
+langchain-experimental>=0.0.50
+langchain-community>=0.0.20
+pypdf>=4.0.0
+langchain-text-splitters>=0.0.1
 
 # ==================== AUTHENTICATION ====================
 python-jose[cryptography]==3.3.0

@@ -1,3 +1,10 @@
+// Copyright 2024 ClinixAI. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+// Patient Profile Collection
+// Stores device owner's personal health information (PHI)
+// Data never leaves device without explicit consent
+
 import 'package:isar/isar.dart';
 
 part 'local_patient_profile.g.dart';

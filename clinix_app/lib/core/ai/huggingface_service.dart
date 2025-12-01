@@ -1,9 +1,45 @@
+// Copyright 2024 ClinixAI. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+// ClinixAI HuggingFace Service
+// Principal-level implementation for HuggingFace Inference API integration
+//
+// Architecture:
+// ┌─────────────────────────────────────────────────────────┐
+// │              HUGGINGFACE INFERENCE                       │
+// │  ┌─────────────────┐  ┌───────────────┐  ┌────────────┐    │
+// │  │   Qwen 2.5-7B   │  │  LiquidAI     │  │  Mistral   │    │
+// │  │   Instruct      │  │  LFM2-1.2B    │  │  7B-Inst   │    │
+// │  └─────────────────┘  └───────────────┘  └────────────┘    │
+// │          │                │                 │            │
+// │          └────────────────┴─────────────────┘            │
+// │                       │                                  │
+// │                       ▼                                  │
+// │  ┌─────────────────────────────────────────────────┐   │
+// │  │  HuggingFaceService (Provider Fallback Chain)    │   │
+// │  │  - Text generation with chat templates            │   │
+// │  │  - Zero-shot classification                       │   │
+// │  │  - Automatic provider failover                    │   │
+// │  └─────────────────────────────────────────────────┘   │
+// └─────────────────────────────────────────────────────────┘
+
 import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:meta/meta.dart';
 
-/// Supported model providers
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+/// Supported model providers for HuggingFace inference.
+///
+/// Each provider has different strengths:
+/// - [qwen]: Best for structured JSON output, medical reasoning
+/// - [liquidAI]: Optimized for on-device/edge deployment
+/// - [mistral]: Good balance of speed and quality
+/// - [custom]: User-defined model endpoints
 enum ModelProvider {
   qwen('Qwen'),
   liquidAI('LiquidAI'),
@@ -14,7 +50,18 @@ enum ModelProvider {
   const ModelProvider(this.displayName);
 }
 
-/// Configuration for HuggingFace Inference API
+// =============================================================================
+// CONFIGURATION
+// =============================================================================
+
+/// Configuration for HuggingFace Inference API.
+///
+/// Defines endpoints, models, and preferences for inference:
+/// - API authentication
+/// - Model endpoints (Qwen, LiquidAI, Mistral)
+/// - Custom inference endpoint URLs
+/// - Provider fallback preferences
+@immutable
 class HuggingFaceConfig {
   /// HuggingFace API token
   final String? apiToken;
@@ -87,7 +134,19 @@ class HuggingFaceConfig {
   }
 }
 
-/// Result from HuggingFace inference
+// =============================================================================
+// RESULT OBJECTS
+// =============================================================================
+
+/// Result from HuggingFace inference operations.
+///
+/// Contains:
+/// - Success/failure status
+/// - Generated text or classification results
+/// - Error information if failed
+/// - Performance metrics (inference time)
+/// - Provider/model metadata
+@immutable
 class HuggingFaceResult {
   final bool success;
   final String? generatedText;
@@ -115,12 +174,36 @@ class HuggingFaceResult {
   }
 }
 
-/// HuggingFace Service for Flutter
-/// 
+// =============================================================================
+// SERVICE CLASS
+// =============================================================================
+
+/// HuggingFace Service for Flutter.
+///
 /// Provides direct access to HuggingFace Inference API for:
-/// - Text generation (medical triage)
-/// - Zero-shot classification
-/// - Symptom analysis
+/// - Text generation (medical triage with chat templates)
+/// - Zero-shot classification (symptom categorization)
+/// - Symptom analysis with provider fallback chain
+///
+/// ## Provider Fallback Chain
+///
+/// When generating triage responses, the service tries providers in order:
+/// 1. Preferred provider (configurable)
+/// 2. Qwen 2.5-7B-Instruct
+/// 3. LiquidAI LFM2-1.2B
+/// 4. Mistral 7B-Instruct
+///
+/// ## Usage Example
+///
+/// ```dart
+/// final service = HuggingFaceService.instance;
+/// await service.initialize(config: HuggingFaceConfig(apiToken: 'hf_xxx'));
+///
+/// final result = await service.generateTriageResponse(
+///   symptoms: 'High fever for 3 days',
+///   patientAge: 25,
+/// );
+/// ```
 class HuggingFaceService {
   static HuggingFaceService? _instance;
   static HuggingFaceService get instance => _instance ??= HuggingFaceService._();

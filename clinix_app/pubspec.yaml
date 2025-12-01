@@ -61,9 +61,11 @@ flutter:
     - assets/knowledge/
     - .env
 
-  fonts:
-    - family: NothingSans
-      fonts:
-        - asset: assets/fonts/NothingSans-Regular.ttf
-        - asset: assets/fonts/NothingSans-Bold.ttf
-          weight: 700
+  # Note: NothingSans font requires font files in assets/fonts/
+  # For testing without fonts, comment out the fonts section below
+  # fonts:
+  #   - family: NothingSans
+  #     fonts:
+  #       - asset: assets/fonts/NothingSans-Regular.ttf
+  #       - asset: assets/fonts/NothingSans-Bold.ttf
+  #         weight: 700

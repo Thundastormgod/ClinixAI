@@ -1,8 +1,42 @@
+// Copyright 2024 ClinixAI. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+// ClinixAI Cloud Triage Service
+// Principal-level implementation for cloud AI orchestration
+//
+// Architecture:
+// ┌─────────────────────────────────────────────────────────┐
+// │                    CLOUD STACK                          │
+// │  ┌─────────────────────────────────────────────────┐   │
+// │  │  ClinixAIService (Orchestration Layer)          │   │
+// │  │  - Session management                           │   │
+// │  │  - Cloud triage API calls                       │   │
+// │  │  - Fallback to rule-based local analysis        │   │
+// │  └─────────────────────────────────────────────────┘   │
+// │           │                                             │
+// │           ▼                                             │
+// │  ┌─────────────────┐    ┌─────────────────────────┐    │
+// │  │ LangGraph Cloud │    │ Local Fallback Engine   │    │
+// │  │ /analyze        │    │ Rule-based triage       │    │
+// │  └─────────────────┘    └─────────────────────────┘    │
+// └─────────────────────────────────────────────────────────┘
+
 import 'dart:async';
 
 import 'package:dio/dio.dart';
+import 'package:meta/meta.dart';
 
-/// Configuration for AI services
+// =============================================================================
+// CONFIGURATION
+// =============================================================================
+
+/// Configuration for AI services.
+///
+/// This class defines all settings for cloud triage inference including:
+/// - Cloud service URL and timeouts
+/// - Local/cloud preference settings
+/// - Confidence thresholds for routing decisions
+@immutable
 class AIServiceConfig {
   /// Cloud triage service URL
   final String cloudServiceUrl;
@@ -48,7 +82,18 @@ class AIServiceConfig {
   }
 }
 
-/// Symptom input for triage
+// =============================================================================
+// VALUE OBJECTS
+// =============================================================================
+
+/// Symptom input for triage.
+///
+/// Immutable value object representing a single symptom with:
+/// - Description text
+/// - Optional severity (1-10 scale)
+/// - Duration in hours
+/// - Body location
+@immutable
 class SymptomInput {
   final String description;
   final int? severity;
@@ -70,7 +115,15 @@ class SymptomInput {
   };
 }
 
-/// Vital signs input
+/// Vital signs input for triage assessment.
+///
+/// Immutable value object containing patient vital signs:
+/// - Temperature (Celsius)
+/// - Heart rate (BPM)
+/// - Blood pressure (systolic/diastolic)
+/// - Oxygen saturation (%)
+/// - Respiratory rate (breaths/min)
+@immutable
 class VitalSignsInput {
   final double? temperature;
   final int? heartRate;
@@ -102,7 +155,14 @@ class VitalSignsInput {
     respiratoryRate == null;
 }
 
-/// Differential diagnosis result
+/// Differential diagnosis result from AI analysis.
+///
+/// Immutable value object containing:
+/// - Condition name
+/// - Probability score (0.0-1.0)
+/// - Optional ICD code
+/// - Reasoning explanation
+@immutable
 class DifferentialDiagnosis {
   final String condition;
   final double probability;
@@ -126,7 +186,17 @@ class DifferentialDiagnosis {
   }
 }
 
-/// Urgency level enum
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+/// Urgency classification for medical triage.
+///
+/// Based on WHO emergency triage guidelines:
+/// - [critical]: Life-threatening, immediate emergency care required
+/// - [urgent]: Serious condition, care within 2-4 hours
+/// - [standard]: Non-emergency, care within 24-48 hours
+/// - [nonUrgent]: Minor condition, self-care appropriate
 enum UrgencyLevel {
   critical,
   urgent,
@@ -176,7 +246,19 @@ enum UrgencyLevel {
   }
 }
 
-/// Complete triage result
+// =============================================================================
+// RESULT OBJECTS
+// =============================================================================
+
+/// Complete triage result from AI analysis.
+///
+/// Comprehensive immutable result object containing:
+/// - Session identification
+/// - Urgency classification and confidence
+/// - Primary assessment and recommended actions
+/// - Differential diagnoses and red flags
+/// - Provider metadata and timing
+@immutable
 class TriageResult {
   final String sessionId;
   final UrgencyLevel urgencyLevel;
@@ -249,7 +331,17 @@ class TriageResult {
   }
 }
 
-/// AI Service exception
+// =============================================================================
+// EXCEPTIONS
+// =============================================================================
+
+/// Exception thrown by AI service operations.
+///
+/// Contains:
+/// - Human-readable message
+/// - Optional error code for programmatic handling
+/// - Original exception for debugging
+@immutable
 class AIServiceException implements Exception {
   final String message;
   final String? code;
@@ -261,10 +353,32 @@ class AIServiceException implements Exception {
   String toString() => 'AIServiceException: $message';
 }
 
-/// Main AI Service for ClinixAI
-/// 
+// =============================================================================
+// SERVICE CLASS
+// =============================================================================
+
+/// Main AI Service for ClinixAI.
+///
 /// This service orchestrates AI inference for medical triage.
 /// It supports both local (Cactus SDK) and cloud (LangGraph) inference.
+///
+/// ## Usage Example
+///
+/// ```dart
+/// final service = ClinixAIService.instance;
+/// await service.initialize(config: AIServiceConfig.production());
+///
+/// final result = await service.analyzeTriage(
+///   sessionId: 'session-123',
+///   symptoms: [SymptomInput(description: 'High fever')],
+///   patientAge: 30,
+/// );
+/// ```
+///
+/// ## Architecture
+///
+/// The service follows a singleton pattern with lazy initialization.
+/// It uses Dio for HTTP communication with retry and timeout handling.
 class ClinixAIService {
   static ClinixAIService? _instance;
   static ClinixAIService get instance => _instance ??= ClinixAIService._();

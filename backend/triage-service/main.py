@@ -2,6 +2,7 @@
 ClinixAI Triage Service
 LangGraph-powered AI analysis for medical triage cases
 Hybrid inference: Local LLM (Cactus) + Cloud AI (HuggingFace, OpenAI, Anthropic)
+Neo4j GraphRAG for medical knowledge retrieval
 """
 
 import os
@@ -18,6 +19,9 @@ import httpx
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END
+
+# GraphRAG imports
+from graphrag import GraphRAGService, Neo4jClient, MedicalSchema
 
 # ==================== LANGGRAPH STATE ====================
 
@@ -597,18 +601,188 @@ async def get_available_models():
         "complexity_threshold": float(os.getenv("COMPLEXITY_THRESHOLD", "0.7")),
     }
 
+# ==================== GRAPHRAG ENDPOINTS ====================
+
+# GraphRAG Pydantic Models
+class GraphRAGQueryRequest(BaseModel):
+    query: str
+    max_results: int = 10
+    include_relationships: bool = True
+    include_entities: bool = True
+
+class GraphRAGQueryResponse(BaseModel):
+    context: str
+    sources: List[str]
+    entities: List[Dict[str, Any]]
+    relationships: List[Dict[str, Any]]
+    confidence: float
+    success: bool
+    error: Optional[str] = None
+
+class EntitySearchRequest(BaseModel):
+    query: str
+    entity_type: Optional[str] = None
+    limit: int = 20
+
+class RedFlagsRequest(BaseModel):
+    symptoms: List[str]
+
+class ConditionsRequest(BaseModel):
+    symptoms: List[str]
+
+class DrugInteractionsRequest(BaseModel):
+    drugs: List[str]
+
+# Global GraphRAG service
+graph_rag_service: Optional[GraphRAGService] = None
+
+def get_graph_rag_service() -> GraphRAGService:
+    """Get or create GraphRAG service instance"""
+    global graph_rag_service
+    if graph_rag_service is None:
+        neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        neo4j_user = os.getenv("NEO4J_USER", "neo4j")
+        neo4j_password = os.getenv("NEO4J_PASSWORD", "clinixai_neo4j_password")
+        
+        graph_rag_service = GraphRAGService(
+            neo4j_uri=neo4j_uri,
+            neo4j_user=neo4j_user,
+            neo4j_password=neo4j_password,
+        )
+    return graph_rag_service
+
+@app.post("/graphrag/query", response_model=GraphRAGQueryResponse)
+async def graphrag_query(request: GraphRAGQueryRequest):
+    """Query the medical knowledge graph for RAG context"""
+    try:
+        service = get_graph_rag_service()
+        
+        # Get RAG context from Neo4j
+        result = await service.get_rag_context(
+            query=request.query,
+            max_results=request.max_results,
+        )
+        
+        return GraphRAGQueryResponse(
+            context=result.get("context", ""),
+            sources=result.get("sources", []),
+            entities=result.get("entities", []) if request.include_entities else [],
+            relationships=result.get("relationships", []) if request.include_relationships else [],
+            confidence=result.get("confidence", 0.5),
+            success=True,
+        )
+    except Exception as e:
+        return GraphRAGQueryResponse(
+            context="",
+            sources=[],
+            entities=[],
+            relationships=[],
+            confidence=0.0,
+            success=False,
+            error=str(e),
+        )
+
+@app.post("/graphrag/search/entities")
+async def search_entities(request: EntitySearchRequest):
+    """Search for medical entities in the knowledge graph"""
+    try:
+        service = get_graph_rag_service()
+        entities = await service.search_entities(
+            query=request.query,
+            entity_type=request.entity_type,
+            limit=request.limit,
+        )
+        return {"entities": entities, "success": True}
+    except Exception as e:
+        return {"entities": [], "success": False, "error": str(e)}
+
+@app.post("/graphrag/red-flags")
+async def get_red_flags(request: RedFlagsRequest):
+    """Get red flags for given symptoms from the knowledge graph"""
+    try:
+        service = get_graph_rag_service()
+        red_flags = await service.get_red_flags_for_symptoms(request.symptoms)
+        return {"red_flags": red_flags, "success": True}
+    except Exception as e:
+        return {"red_flags": [], "success": False, "error": str(e)}
+
+@app.post("/graphrag/conditions")
+async def get_possible_conditions(request: ConditionsRequest):
+    """Get possible conditions for given symptoms"""
+    try:
+        service = get_graph_rag_service()
+        conditions = await service.get_possible_conditions(request.symptoms)
+        return {"conditions": conditions, "success": True}
+    except Exception as e:
+        return {"conditions": [], "success": False, "error": str(e)}
+
+@app.post("/graphrag/drug-interactions")
+async def get_drug_interactions(request: DrugInteractionsRequest):
+    """Get drug interactions from the knowledge graph"""
+    try:
+        service = get_graph_rag_service()
+        interactions = await service.get_drug_interactions(request.drugs)
+        return {"interactions": interactions, "success": True}
+    except Exception as e:
+        return {"interactions": [], "success": False, "error": str(e)}
+
+@app.get("/graphrag/stats")
+async def get_graphrag_stats():
+    """Get statistics about the medical knowledge graph"""
+    try:
+        service = get_graph_rag_service()
+        stats = await service.get_graph_stats()
+        return {"stats": stats, "success": True}
+    except Exception as e:
+        return {"stats": {}, "success": False, "error": str(e)}
+
+@app.post("/graphrag/ingest")
+async def ingest_documents(
+    directory: str = None,
+    background_tasks: BackgroundTasks = None
+):
+    """Ingest documents into the knowledge graph (background task)"""
+    try:
+        service = get_graph_rag_service()
+        
+        if directory:
+            # Run ingestion in background
+            background_tasks.add_task(service.ingest_directory, directory)
+            return {
+                "message": f"Started ingesting documents from {directory}",
+                "success": True,
+            }
+        else:
+            return {
+                "message": "No directory specified",
+                "success": False,
+            }
+    except Exception as e:
+        return {"message": str(e), "success": False}
+
+# ==================== ROOT ENDPOINT ====================
+
 @app.get("/")
 async def root():
     return {
         "service": "ClinixAI Triage Service",
-        "version": "2.0.0",
-        "engine": "LangGraph",
+        "version": "2.1.0",
+        "engine": "LangGraph + Neo4j GraphRAG",
         "status": "running",
         "endpoints": {
             "health": "GET /health",
             "analyze": "POST /analyze",
             "graph": "GET /graph",
             "models": "GET /models",
+            "graphrag": {
+                "query": "POST /graphrag/query",
+                "search_entities": "POST /graphrag/search/entities",
+                "red_flags": "POST /graphrag/red-flags",
+                "conditions": "POST /graphrag/conditions",
+                "drug_interactions": "POST /graphrag/drug-interactions",
+                "stats": "GET /graphrag/stats",
+                "ingest": "POST /graphrag/ingest",
+            },
         },
     }
 

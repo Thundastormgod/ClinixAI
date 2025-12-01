@@ -1,3 +1,38 @@
+// Copyright 2024 ClinixAI. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+// ClinixAI Riverpod Providers
+// Principal-level state management for AI services
+//
+// Architecture:
+// ┌─────────────────────────────────────────────────────────┐
+// │                 PROVIDER HIERARCHY                       │
+// │                                                           │
+// │  ┌─────────────────────────────────────────────────┐   │
+// │  │          SERVICE PROVIDERS (Singletons)           │   │
+// │  │  cactusServiceProvider    → CactusService         │   │
+// │  │  openRouterServiceProvider → OpenRouterService    │   │
+// │  │  hybridRouterProvider     → HybridRouter          │   │
+// │  │  knowledgeBaseServiceProvider → KnowledgeBaseSvc  │   │
+// │  └─────────────────────────────────────────────────┘   │
+// │                       │                                  │
+// │                       ▼                                  │
+// │  ┌─────────────────────────────────────────────────┐   │
+// │  │          ASYNC INIT PROVIDERS (FutureProvider)    │   │
+// │  │  cactusLMReadyProvider     → bool                 │   │
+// │  │  cactusSTTReadyProvider    → bool                 │   │
+// │  │  hybridRouterReadyProvider → bool                 │   │
+// │  │  knowledgeBaseReadyProvider → bool                │   │
+// │  └─────────────────────────────────────────────────┘   │
+// │                       │                                  │
+// │                       ▼                                  │
+// │  ┌─────────────────────────────────────────────────┐   │
+// │  │          STATE NOTIFIERS (StateNotifierProvider)  │   │
+// │  │  triageAnalysisProvider   → TriageAnalysisState   │   │
+// │  │  ragSearchProvider        → RAGSearchState        │   │
+// │  └─────────────────────────────────────────────────┘   │
+// └─────────────────────────────────────────────────────────┘
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'clinix_ai_service.dart';
@@ -8,7 +43,15 @@ import 'hybrid_router.dart';
 import 'knowledge_base_service.dart';
 import '../database/local_database.dart';
 
-/// AI Service Configuration Provider
+// =============================================================================
+// CONFIGURATION PROVIDERS
+// =============================================================================
+
+/// AI Service Configuration Provider.
+///
+/// Provides the appropriate [AIServiceConfig] based on build mode:
+/// - Production: Uses production URLs with stricter thresholds
+/// - Development: Uses localhost with relaxed thresholds
 final aiServiceConfigProvider = Provider<AIServiceConfig>((ref) {
   // In production, this would come from environment or remote config
   const isProduction = bool.fromEnvironment('dart.vm.product');
@@ -18,7 +61,14 @@ final aiServiceConfigProvider = Provider<AIServiceConfig>((ref) {
     : AIServiceConfig.development();
 });
 
-/// Main ClinixAI Service Provider
+// =============================================================================
+// SERVICE PROVIDERS
+// =============================================================================
+
+/// Main ClinixAI Service Provider.
+///
+/// Provides singleton access to [ClinixAIService] with automatic
+/// configuration and disposal handling.
 final clinixAIServiceProvider = Provider<ClinixAIService>((ref) {
   final config = ref.watch(aiServiceConfigProvider);
   final service = ClinixAIService.instance;
@@ -81,7 +131,16 @@ final cactusSTTReadyProvider = FutureProvider<bool>((ref) async {
   }
 });
 
-/// Cactus Model Status Provider
+// =============================================================================
+// STATUS PROVIDERS
+// =============================================================================
+
+/// Cactus Model Status Provider.
+///
+/// Provides real-time status of all Cactus SDK components:
+/// - LM (Language Model) readiness and current model
+/// - STT (Speech-to-Text) readiness
+/// - RAG initialization status
 final cactusModelStatusProvider = Provider<Map<String, dynamic>>((ref) {
   final cactus = ref.watch(cactusServiceProvider);
   
@@ -207,7 +266,17 @@ final aiProvidersStatusProvider = FutureProvider<Map<String, dynamic>>((ref) asy
   return service.getProvidersStatus();
 });
 
-/// Triage Analysis State
+// =============================================================================
+// TRIAGE STATE MANAGEMENT
+// =============================================================================
+
+/// State container for triage analysis operations.
+///
+/// Tracks:
+/// - Loading state during analysis
+/// - Analysis result when complete
+/// - Error information if failed
+/// - Processing time for performance monitoring
 class TriageAnalysisState {
   final bool isLoading;
   final TriageResult? result;
@@ -297,7 +366,18 @@ final triageAnalysisProvider =
   return TriageAnalysisNotifier(service);
 });
 
-/// AI Mode Enum
+// =============================================================================
+// AI MODE CONFIGURATION
+// =============================================================================
+
+/// AI inference mode selection.
+///
+/// Determines how triage inference is routed:
+/// - [cloudOnly]: Always use cloud (requires connectivity)
+/// - [localOnly]: Always use on-device (works offline)
+/// - [hybridLocalFirst]: Try local, fallback to cloud
+/// - [hybridCloudFirst]: Try cloud, fallback to local
+/// - [auto]: Intelligent routing based on connectivity/complexity
 enum AIMode {
   /// Always use cloud inference
   cloudOnly,

@@ -1,3 +1,10 @@
+// Copyright 2024 ClinixAI. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+// RAG Document Collection
+// Stores medical knowledge documents with embeddings for retrieval
+// Supports semantic search via vector similarity
+
 import 'dart:convert';
 import 'package:isar/isar.dart';
 
