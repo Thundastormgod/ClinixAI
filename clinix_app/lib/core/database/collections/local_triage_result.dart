@@ -1,10 +1,3 @@
-// Copyright 2024 ClinixAI. All rights reserved.
-// SPDX-License-Identifier: MIT
-//
-// Triage Result Collection
-// Stores AI-generated triage assessments
-// Includes urgency level, differential diagnoses, and source attributions
-
 import 'dart:convert';
 import 'package:isar/isar.dart';
 

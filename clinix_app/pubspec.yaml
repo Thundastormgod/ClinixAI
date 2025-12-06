@@ -37,6 +37,8 @@ dependencies:
 
   # UI Components
   cupertino_icons: ^1.0.6
+  intl_phone_field: ^3.2.0
+  url_launcher: ^6.2.4
 
   # Cactus SDK for On-Device LLM and STT
   # Built-in model downloading, Qwen LLM, Whisper STT, RAG, Embeddings
@@ -61,8 +63,7 @@ flutter:
     - assets/knowledge/
     - .env
 
-  # Note: NothingSans font requires font files in assets/fonts/
-  # For testing without fonts, comment out the fonts section below
+  # Fonts temporarily disabled for web build
   # fonts:
   #   - family: NothingSans
   #     fonts:

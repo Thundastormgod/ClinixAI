@@ -1,10 +1,3 @@
-// Copyright 2024 ClinixAI. All rights reserved.
-// SPDX-License-Identifier: MIT
-//
-// Symptom Collection
-// Stores individual symptoms reported during triage
-// Linked to triage sessions via sessionId
-
 import 'package:isar/isar.dart';
 
 part 'local_symptom.g.dart';

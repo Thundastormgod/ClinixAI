@@ -1,18 +1,28 @@
 """
 ClinixAI Triage Service
 LangGraph-powered AI analysis for medical triage cases
-Hybrid inference: Local LLM (Cactus) + Cloud AI (HuggingFace, OpenAI, Anthropic)
+
+Inference Provider Chain (in order of priority):
+1. OpenRouter (PRIMARY) - Unified access to GPT-4, Claude, Llama, Mistral via single API
+2. HuggingFace - Mistral, Qwen models
+3. OpenAI - Direct GPT-4o access
+4. Anthropic - Direct Claude access
+5. Rule-based fallback
+
+Edge Deployment: Cactus SDK (for offline/on-device inference - tested separately)
 Neo4j GraphRAG for medical knowledge retrieval
 """
 
 import os
 import json
+import re
+import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any, TypedDict, Annotated
 from contextlib import asynccontextmanager
 import operator
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import httpx
@@ -22,6 +32,9 @@ from langgraph.graph import StateGraph, END
 
 # GraphRAG imports
 from graphrag import GraphRAGService, Neo4jClient, MedicalSchema
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 # ==================== LANGGRAPH STATE ====================
 
@@ -92,8 +105,129 @@ def symptom_analyzer_node(state: TriageState) -> TriageState:
         "messages": [f"[SymptomAnalyzer] Complexity: {complexity_score:.2f}, Critical: {detected_critical}"],
     }
 
+async def openrouter_node(state: TriageState) -> TriageState:
+    """
+    Process with OpenRouter API - Primary inference provider.
+    OpenRouter provides unified access to multiple models:
+    - GPT-4, GPT-4o, GPT-4o-mini (OpenAI)
+    - Claude 3.5 Sonnet, Claude 3 Opus (Anthropic)
+    - Llama 3.1 70B/8B (Meta)
+    - Mistral Large, Mixtral (Mistral AI)
+    
+    Model selection based on case complexity:
+    - Critical cases: claude-3.5-sonnet or gpt-4o
+    - Standard cases: gpt-4o-mini or llama-3.1-70b
+    - Simple cases: llama-3.1-8b (free tier)
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    if not api_key or api_key == "your-openrouter-key":
+        return {
+            **state,
+            "error": "OpenRouter API key not configured",
+            "messages": ["[OpenRouter] No API key, skipping to fallback"],
+        }
+    
+    features = state.get("symptom_features", {})
+    complexity = state.get("complexity_score", 0.5)
+    
+    # Dynamic model selection based on complexity and criticality
+    if features.get("critical_keywords") or complexity >= 0.9:
+        # Critical cases - use most capable model
+        model = os.getenv("OPENROUTER_CRITICAL_MODEL", "anthropic/claude-3.5-sonnet")
+    elif complexity >= 0.7:
+        # Standard complex cases
+        model = os.getenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4o-mini")
+    else:
+        # Simple cases - use cost-effective model
+        model = os.getenv("OPENROUTER_SIMPLE_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+    
+    prompt = f"""You are ClinixAI, a medical triage assistant. Analyze these symptoms and provide a structured assessment.
+
+PATIENT SYMPTOMS:
+{features.get('symptom_text', 'No symptoms provided')}
+
+SEVERITY RATING: {features.get('max_severity', 5)}/10
+CRITICAL INDICATORS: {features.get('critical_keywords', [])}
+URGENT INDICATORS: {features.get('urgent_keywords', [])}
+
+Respond ONLY with valid JSON in this exact format:
+{{"urgency": "critical|urgent|standard|non-urgent", "confidence": 0.0-1.0, "assessment": "Brief clinical assessment", "action": "Recommended action", "conditions": [{{"name": "Possible condition", "probability": 0.0-1.0}}], "red_flags": ["Warning signs if any"]}}"""
+
+    try:
+        start = datetime.utcnow()
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "https://clinixai.health"),
+                    "X-Title": os.getenv("OPENROUTER_SITE_NAME", "ClinixAI Health"),
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": "You are ClinixAI, an expert medical triage AI. Always respond with valid JSON only. Be accurate, concise, and prioritize patient safety."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 500,
+                },
+                timeout=45.0,
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                content = data["choices"][0]["message"]["content"]
+                
+                # Extract JSON from response (handle markdown code blocks)
+                json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+                if json_match:
+                    content = json_match.group(1)
+                else:
+                    # Try to find raw JSON
+                    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+                    if json_match:
+                        content = json_match.group()
+                
+                result = json.loads(content)
+                inference_time = int((datetime.utcnow() - start).total_seconds() * 1000)
+                
+                return {
+                    **state,
+                    "urgency_level": result.get("urgency", "standard"),
+                    "confidence_score": result.get("confidence", 0.85),
+                    "primary_assessment": result.get("assessment", "Assessment via OpenRouter"),
+                    "recommended_action": result.get("action", "Consult healthcare professional"),
+                    "differential_diagnoses": result.get("conditions", []),
+                    "inference_provider": f"openrouter/{model}",
+                    "inference_time_ms": inference_time,
+                    "escalated_to_cloud": True,
+                    "error": None,
+                    "messages": [f"[OpenRouter] Success with {model} in {inference_time}ms"],
+                }
+            else:
+                error_msg = f"OpenRouter API error: {response.status_code}"
+                return {
+                    **state,
+                    "error": error_msg,
+                    "messages": [f"[OpenRouter] {error_msg}"],
+                }
+    except json.JSONDecodeError as e:
+        return {
+            **state,
+            "error": f"Failed to parse OpenRouter response: {str(e)}",
+            "messages": ["[OpenRouter] JSON parse error, trying fallback"],
+        }
+    except Exception as e:
+        return {
+            **state,
+            "error": f"OpenRouter inference failed: {str(e)}",
+            "messages": [f"[OpenRouter] Error: {str(e)}"],
+        }
+
 async def huggingface_node(state: TriageState) -> TriageState:
-    """Process with HuggingFace Inference API"""
+    """Process with HuggingFace Inference API (fallback after OpenRouter)"""
     api_key = os.getenv("HUGGINGFACE_API_KEY", "")
     if not api_key:
         return {
@@ -129,7 +263,6 @@ Respond in JSON format:
                 text = data[0].get("generated_text", "") if isinstance(data, list) else str(data)
                 
                 # Extract JSON from response
-                import re
                 json_match = re.search(r'\{[^{}]*\}', text)
                 if json_match:
                     result = json.loads(json_match.group())
@@ -154,11 +287,11 @@ Respond in JSON format:
     return {
         **state,
         "error": "HuggingFace inference failed",
-        "messages": ["[HuggingFace] Failed, will try fallback"],
+        "messages": ["[HuggingFace] Failed, will try OpenAI"],
     }
 
 async def openai_node(state: TriageState) -> TriageState:
-    """Process with OpenAI GPT-4"""
+    """Process with OpenAI GPT-4 (fallback after HuggingFace)"""
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key or api_key == "your-openai-key":
         return {
@@ -322,13 +455,19 @@ def fallback_node(state: TriageState) -> TriageState:
 # ==================== LANGGRAPH ROUTING ====================
 
 def should_use_cloud(state: TriageState) -> str:
-    """Route based on complexity score"""
+    """Route based on complexity score - prefer cloud (OpenRouter primary)"""
     complexity = state.get("complexity_score", 0.5)
-    threshold = float(os.getenv("COMPLEXITY_THRESHOLD", "0.7"))
+    threshold = float(os.getenv("COMPLEXITY_THRESHOLD", "0.3"))  # Lower threshold to prefer cloud
     
     if complexity >= threshold:
         return "cloud"
     return "local_fallback"
+
+def check_openrouter_result(state: TriageState) -> str:
+    """Check if OpenRouter succeeded (PRIMARY provider)"""
+    if state.get("error") is None and state.get("inference_provider", "").startswith("openrouter"):
+        return "done"
+    return "try_huggingface"
 
 def check_huggingface_result(state: TriageState) -> str:
     """Check if HuggingFace succeeded"""
@@ -351,11 +490,23 @@ def check_anthropic_result(state: TriageState) -> str:
 # ==================== BUILD LANGGRAPH ====================
 
 def build_triage_graph() -> StateGraph:
-    """Build the LangGraph workflow for triage"""
+    """
+    Build the LangGraph workflow for triage.
+    
+    Provider Chain (priority order):
+    1. OpenRouter (PRIMARY) - Multi-model access via single API
+    2. HuggingFace - Mistral/Qwen fallback
+    3. OpenAI - Direct GPT-4 fallback
+    4. Anthropic - Direct Claude fallback
+    5. Rule-based - Final fallback
+    
+    Note: Cactus SDK for edge deployment is tested separately.
+    """
     workflow = StateGraph(TriageState)
     
-    # Add nodes
+    # Add nodes - OpenRouter is PRIMARY
     workflow.add_node("symptom_analyzer", symptom_analyzer_node)
+    workflow.add_node("openrouter", openrouter_node)  # PRIMARY
     workflow.add_node("huggingface", huggingface_node)
     workflow.add_node("openai", openai_node)
     workflow.add_node("anthropic", anthropic_node)
@@ -369,12 +520,18 @@ def build_triage_graph() -> StateGraph:
         "symptom_analyzer",
         should_use_cloud,
         {
-            "cloud": "huggingface",
+            "cloud": "openrouter",  # OpenRouter is PRIMARY cloud provider
             "local_fallback": "fallback",
         }
     )
     
-    # Cloud provider chain with fallbacks
+    # Cloud provider chain: OpenRouter -> HuggingFace -> OpenAI -> Anthropic -> Fallback
+    workflow.add_conditional_edges(
+        "openrouter",
+        check_openrouter_result,
+        {"done": END, "try_huggingface": "huggingface"}
+    )
+    
     workflow.add_conditional_edges(
         "huggingface",
         check_huggingface_result,
@@ -760,18 +917,348 @@ async def ingest_documents(
     except Exception as e:
         return {"message": str(e), "success": False}
 
+
+# ==================== ADVANCED RAG ENDPOINTS ====================
+
+# Global advanced RAG service instance
+_advanced_rag_service = None
+
+def get_advanced_rag_service():
+    """Get or create the advanced RAG service"""
+    global _advanced_rag_service
+    if _advanced_rag_service is None:
+        try:
+            from graphrag.advanced_rag_service import AdvancedRAGService
+            _advanced_rag_service = AdvancedRAGService()
+            _advanced_rag_service.initialize()
+        except Exception as e:
+            logger.error(f"Failed to initialize AdvancedRAGService: {e}")
+            raise HTTPException(status_code=500, detail=f"RAG service unavailable: {e}")
+    return _advanced_rag_service
+
+
+class PDFUploadResponse(BaseModel):
+    success: bool
+    document_id: Optional[str] = None
+    file_name: str
+    chunks: int = 0
+    entities_extracted: int = 0
+    relationships_extracted: int = 0
+    message: str = ""
+
+
+class RAGQueryRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    include_entities: bool = True
+    include_graph_context: bool = True
+
+
+class RAGQueryResponse(BaseModel):
+    success: bool
+    query: str
+    chunks: List[Dict[str, Any]] = []
+    entities: List[Dict[str, Any]] = []
+    graph_paths: List[str] = []
+    formatted_context: str = ""
+    retrieval_method: str = "hybrid"
+
+
+@app.post("/rag/upload-pdf", response_model=PDFUploadResponse)
+async def upload_pdf_for_rag(
+    file: UploadFile = File(...),
+    extract_entities: bool = True,
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Upload a PDF document to be ingested into the medical knowledge graph.
+    
+    The PDF will be:
+    1. Split into chunks
+    2. Embedded using sentence transformers
+    3. Stored in Neo4j with vector embeddings
+    4. Optionally: Entities extracted using OpenRouter AI
+    
+    This enables semantic search and knowledge graph queries.
+    """
+    import aiofiles
+    import tempfile
+    import os as _os
+    
+    # Validate file type
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    
+    try:
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        # Get RAG service
+        rag_service = get_advanced_rag_service()
+        
+        # Ingest PDF
+        stats = await rag_service.ingest_pdf(
+            pdf_path=tmp_path,
+            extract_entities=extract_entities
+        )
+        
+        # Clean up temp file
+        _os.unlink(tmp_path)
+        
+        return PDFUploadResponse(
+            success=True,
+            document_id=stats.get("document_id"),
+            file_name=file.filename,
+            chunks=stats.get("chunks", 0),
+            entities_extracted=stats.get("entities_extracted", 0),
+            relationships_extracted=stats.get("relationships_extracted", 0),
+            message=f"Successfully ingested {file.filename}"
+        )
+        
+    except Exception as e:
+        logger.error(f"PDF upload failed: {e}")
+        return PDFUploadResponse(
+            success=False,
+            file_name=file.filename,
+            message=f"Failed to ingest PDF: {str(e)}"
+        )
+
+
+@app.post("/rag/query", response_model=RAGQueryResponse)
+async def query_rag(request: RAGQueryRequest):
+    """
+    Query the knowledge graph using hybrid retrieval.
+    
+    Combines:
+    - Semantic search (vector similarity)
+    - Keyword search (full-text)
+    - Graph traversal (entity relationships)
+    
+    Returns relevant chunks and entities for AI context.
+    """
+    try:
+        rag_service = get_advanced_rag_service()
+        
+        # Perform hybrid retrieval
+        context = rag_service.retrieve(
+            query=request.query,
+            top_k=request.top_k,
+            include_entities=request.include_entities,
+            include_graph_context=request.include_graph_context
+        )
+        
+        # Format for response
+        chunks = [
+            {
+                "id": c.id,
+                "text": c.text[:500],  # Truncate for response
+                "document_id": c.document_id,
+                "score": c.metadata.get("score", 0),
+                "method": c.metadata.get("method", "unknown")
+            }
+            for c in context.chunks
+        ]
+        
+        # Format context for LLM
+        formatted_context = rag_service.format_context_for_llm(context)
+        
+        return RAGQueryResponse(
+            success=True,
+            query=request.query,
+            chunks=chunks,
+            entities=context.entities,
+            graph_paths=context.graph_paths,
+            formatted_context=formatted_context,
+            retrieval_method=context.retrieval_method
+        )
+        
+    except Exception as e:
+        logger.error(f"RAG query failed: {e}")
+        return RAGQueryResponse(
+            success=False,
+            query=request.query,
+            formatted_context=f"Error: {str(e)}"
+        )
+
+
+@app.get("/rag/stats")
+async def get_rag_stats():
+    """Get advanced RAG service statistics"""
+    try:
+        rag_service = get_advanced_rag_service()
+        return {
+            "success": True,
+            **rag_service.get_stats()
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.post("/rag/ingest-directory")
+async def ingest_directory(
+    directory: str,
+    extract_entities: bool = True,
+    background_tasks: BackgroundTasks = None
+):
+    """Ingest all PDFs in a directory (runs in background)"""
+    try:
+        rag_service = get_advanced_rag_service()
+        
+        # Run in background
+        async def _ingest():
+            return await rag_service.ingest_directory(
+                directory=directory,
+                extract_entities=extract_entities
+            )
+        
+        background_tasks.add_task(_ingest)
+        
+        return {
+            "success": True,
+            "message": f"Started ingesting PDFs from {directory}",
+            "status": "processing"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ==================== RAG-ENHANCED TRIAGE ====================
+
+@app.post("/analyze-with-rag")
+async def analyze_with_rag(request: TriageRequest):
+    """
+    Perform AI triage analysis enhanced with RAG context.
+    
+    This combines:
+    1. Symptom analysis (existing triage flow)
+    2. Knowledge graph retrieval (medical context)
+    3. OpenRouter AI inference (with RAG context)
+    
+    Returns enhanced analysis with supporting medical knowledge.
+    """
+    try:
+        # Get RAG context first
+        rag_context = ""
+        rag_entities = []
+        rag_paths = []
+        
+        try:
+            rag_service = get_advanced_rag_service()
+            
+            # Build query from symptoms
+            symptom_text = " ".join([s.description for s in request.symptoms])
+            
+            # Retrieve relevant context
+            context = rag_service.retrieve(
+                query=symptom_text,
+                top_k=3,
+                include_entities=True,
+                include_graph_context=True
+            )
+            
+            rag_context = rag_service.format_context_for_llm(context)
+            rag_entities = context.entities
+            rag_paths = context.graph_paths
+            
+        except Exception as e:
+            logger.warning(f"RAG retrieval failed, proceeding without context: {e}")
+        
+        # Prepare initial state with RAG context
+        initial_state: TriageState = {
+            "session_id": request.session_id,
+            "symptoms": [s.model_dump() for s in request.symptoms],
+            "vital_signs": request.vital_signs.model_dump() if request.vital_signs else None,
+            "patient_info": {
+                "age": request.patient_age,
+                "gender": request.patient_gender,
+                "medical_history": request.medical_history or [],
+            },
+            "symptom_features": {
+                "rag_context": rag_context,  # Add RAG context
+            },
+            "complexity_score": 0.0,
+            "urgency_level": "standard",
+            "confidence_score": 0.0,
+            "primary_assessment": "",
+            "recommended_action": "",
+            "differential_diagnoses": [],
+            "inference_provider": "",
+            "inference_time_ms": 0,
+            "escalated_to_cloud": False,
+            "error": None,
+            "messages": [],
+        }
+        
+        # Run the LangGraph workflow
+        try:
+            result = await triage_graph.ainvoke(initial_state)
+        except Exception as e:
+            result = fallback_node(initial_state)
+            result["error"] = str(e)
+        
+        # Parse differential diagnoses
+        raw_diagnoses = result.get("differential_diagnoses", [])
+        differential_diagnoses = []
+        for d in raw_diagnoses:
+            if isinstance(d, dict):
+                differential_diagnoses.append(DifferentialDiagnosis(
+                    condition=d.get("name", d.get("condition", "Unknown")),
+                    probability=d.get("probability", 0.5),
+                    icd_code=d.get("icd_code"),
+                ))
+            elif isinstance(d, str):
+                differential_diagnoses.append(DifferentialDiagnosis(
+                    condition=d,
+                    probability=0.5,
+                ))
+        
+        # Build enhanced response
+        response = TriageResponse(
+            session_id=request.session_id,
+            urgency_level=result.get("urgency_level", "standard"),
+            confidence_score=result.get("confidence_score", 0.5),
+            primary_assessment=result.get("primary_assessment", "Assessment unavailable"),
+            recommended_action=result.get("recommended_action", "Consult a healthcare professional"),
+            differential_diagnoses=differential_diagnoses,
+            escalated_to_cloud=result.get("escalated_to_cloud", False),
+            ai_model=result.get("inference_provider", "unknown"),
+            inference_time_ms=result.get("inference_time_ms", 0),
+            complexity_score=result.get("complexity_score"),
+            workflow_messages=result.get("messages", []),
+        )
+        
+        # Add RAG-specific fields to response
+        return {
+            **response.model_dump(),
+            "rag_enhanced": True,
+            "knowledge_sources": len(rag_entities),
+            "graph_insights": rag_paths[:5],  # Top 5 insights
+        }
+        
+    except Exception as e:
+        logger.error(f"RAG-enhanced analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== ROOT ENDPOINT ====================
 
 @app.get("/")
 async def root():
     return {
         "service": "ClinixAI Triage Service",
-        "version": "2.1.0",
-        "engine": "LangGraph + Neo4j GraphRAG",
+        "version": "2.2.0",
+        "engine": "LangGraph + Neo4j GraphRAG + Semantic Search",
         "status": "running",
         "endpoints": {
             "health": "GET /health",
             "analyze": "POST /analyze",
+            "analyze_with_rag": "POST /analyze-with-rag",
             "graph": "GET /graph",
             "models": "GET /models",
             "graphrag": {
@@ -782,6 +1269,12 @@ async def root():
                 "drug_interactions": "POST /graphrag/drug-interactions",
                 "stats": "GET /graphrag/stats",
                 "ingest": "POST /graphrag/ingest",
+            },
+            "rag": {
+                "upload_pdf": "POST /rag/upload-pdf",
+                "query": "POST /rag/query",
+                "stats": "GET /rag/stats",
+                "ingest_directory": "POST /rag/ingest-directory",
             },
         },
     }

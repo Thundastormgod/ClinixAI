@@ -1,26 +1,3 @@
-// Copyright 2024 ClinixAI. All rights reserved.
-// SPDX-License-Identifier: MIT
-//
-// Perform Triage Use Case
-// Principal-level implementation of core triage business logic
-//
-// Flow:
-// ┌─────────────────────────────────────────────────────────┐
-// │  1. Initialize Cactus → 2. Create Session → 3. Record    │
-// │                                              Symptoms    │
-// │                                                           │
-// │  4. Get Knowledge → 5. Load Patient → 6. Run Hybrid AI   │
-// │     Base Context      History to RAG                      │
-// │                                                           │
-// │  7. Parse Response → 8. Save Result → 9. Return Outcome  │
-// └─────────────────────────────────────────────────────────┘
-//
-// Routing Logic (from HybridRouter):
-// - Critical symptoms → Cloud AI (GPT-4o, Claude 3.5 Sonnet)
-// - Complex cases → Local with cloud escalation
-// - Standard cases → Local LLM (LFM2-1.2B-RAG)
-// - Offline → Always local
-
 import 'dart:convert';
 
 import '../../../../core/ai/cactus_service.dart';
@@ -28,42 +5,24 @@ import '../../../../core/ai/hybrid_router.dart';
 import '../../../../core/ai/knowledge_base_service.dart';
 import '../../../../core/database/local_database.dart';
 
-// =============================================================================
-// USE CASE
-// =============================================================================
-
-/// Perform Triage Use Case.
-///
+/// Perform Triage Use Case
+/// 
 /// This is the CORE business logic of ClinixAI.
 /// It orchestrates the entire triage flow using the HybridRouter:
-///
-/// 1. Create a session in local database
-/// 2. Record symptoms with metadata
+/// 1. Create a session
+/// 2. Record symptoms
 /// 3. Route to appropriate AI (local/cloud) based on risk/complexity
 /// 4. Run AI inference with RAG knowledge base for medical context
-/// 5. Include patient history in RAG context for personalization
-/// 6. Save results with source attributions for transparency
-/// 7. Return comprehensive triage outcome
-///
-/// ## Routing Logic
-///
+/// 5. Include patient history in RAG context
+/// 6. Save results with source attributions
+/// 7. Return triage outcome
+/// 
+/// Routing Logic (from HybridRouter):
 /// - Critical symptoms → Cloud AI (GPT-4o, Claude 3.5 Sonnet)
 /// - Complex cases → Local with cloud escalation
 /// - Standard cases → Local LLM (LFM2-1.2B-RAG)
 /// - Offline → Always local
-///
-/// ## Usage Example
-///
-/// ```dart
-/// final useCase = PerformTriageUseCase();
-/// final outcome = await useCase.execute(
-///   TriageInput(
-///     symptoms: [SymptomInput(description: 'High fever')],
-///     deviceId: 'device-123',
-///   ),
-/// );
-/// print(outcome.summary);
-/// ```
+
 class PerformTriageUseCase {
   final HybridRouter _router;
   final CactusService _cactusService;
@@ -320,18 +279,7 @@ class PerformTriageUseCase {
   }
 }
 
-// =============================================================================
-// INPUT VALUE OBJECTS
-// =============================================================================
-
-/// Input for triage use case.
-///
-/// Contains all data needed to perform a triage:
-/// - List of symptoms (required)
-/// - Device metadata for analytics
-/// - Optional location for regional disease consideration
-/// - Vital signs if available
-/// - Force flags for testing local/cloud paths
+/// Input for triage use case
 class TriageInput {
   final List<SymptomInput> symptoms;
   final String? deviceId;
@@ -356,14 +304,7 @@ class TriageInput {
   });
 }
 
-/// Individual symptom input for triage.
-///
-/// Captures:
-/// - Free-text description (required)
-/// - Severity on 1-10 scale
-/// - Duration in hours
-/// - Body location (head, chest, abdomen, etc.)
-/// - Optional image URL for visual symptoms
+/// Individual symptom input
 class SymptomInput {
   final String description;
   final int? severity;
@@ -380,23 +321,7 @@ class SymptomInput {
   });
 }
 
-// =============================================================================
-// OUTPUT VALUE OBJECTS
-// =============================================================================
-
-/// Comprehensive output from triage use case.
-///
-/// Contains:
-/// - Session and symptom records (persisted to DB)
-/// - AI analysis result with urgency classification
-/// - Routing metadata (which AI was used, escalation info)
-/// - Performance metrics (inference time)
-/// - Source attributions from knowledge base
-///
-/// ## Display Helper
-///
-/// Use [summary] for a formatted text representation suitable
-/// for debugging or simple UI display.
+/// Output from triage use case
 class TriageOutcome {
   final LocalTriageSession session;
   final List<LocalSymptom> symptoms;

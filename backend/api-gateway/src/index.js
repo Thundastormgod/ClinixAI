@@ -152,18 +152,67 @@ app.post('/api/v1/triage/sessions/:sessionId/symptoms', async (req, res) => {
 app.post('/api/v1/triage/sessions/:sessionId/analyze', async (req, res) => {
   try {
     const { sessionId } = req.params;
+    const { symptoms, vitalSigns, patientAge, patientGender, medicalHistory } = req.body;
     
-    // Forward to Triage Service
+    // Forward to Triage Service with properly formatted request
     const axios = require('axios');
     const triageServiceUrl = process.env.TRIAGE_SERVICE_URL || 'http://localhost:8000';
     
-    const response = await axios.post(`${triageServiceUrl}/analyze`, {
-      sessionId,
-      ...req.body,
+    // Transform symptoms to match triage service format
+    const formattedSymptoms = (symptoms || []).map(s => ({
+      description: s.description || s.name || '',
+      severity: s.severity || 5,
+      duration_minutes: s.duration_minutes || s.durationMinutes || 0,
+      body_location: s.body_location || s.bodyLocation || null,
+    }));
+    
+    const triageRequest = {
+      session_id: sessionId,
+      symptoms: formattedSymptoms,
+      vital_signs: vitalSigns ? {
+        heart_rate: vitalSigns.heartRate || vitalSigns.heart_rate,
+        blood_pressure_systolic: vitalSigns.bloodPressureSystolic || vitalSigns.blood_pressure_systolic,
+        blood_pressure_diastolic: vitalSigns.bloodPressureDiastolic || vitalSigns.blood_pressure_diastolic,
+        temperature: vitalSigns.temperature,
+        respiratory_rate: vitalSigns.respiratoryRate || vitalSigns.respiratory_rate,
+        oxygen_saturation: vitalSigns.oxygenSaturation || vitalSigns.oxygen_saturation,
+      } : null,
+      patient_age: patientAge,
+      patient_gender: patientGender,
+      medical_history: medicalHistory,
+    };
+    
+    console.log(`[Triage] Forwarding analyze request for session ${sessionId} to ${triageServiceUrl}`);
+    
+    const response = await axios.post(`${triageServiceUrl}/analyze`, triageRequest, {
+      timeout: 60000, // 60 second timeout for AI inference
     });
     
-    res.json(response.data);
+    // Transform response back to camelCase for frontend
+    const result = response.data;
+    res.json({
+      success: true,
+      data: {
+        sessionId: result.session_id,
+        urgencyLevel: result.urgency_level,
+        confidenceScore: result.confidence_score,
+        primaryAssessment: result.primary_assessment,
+        recommendedAction: result.recommended_action,
+        differentialDiagnoses: (result.differential_diagnoses || []).map(d => ({
+          condition: d.condition,
+          probability: d.probability,
+          icdCode: d.icd_code,
+        })),
+        escalatedToCloud: result.escalated_to_cloud,
+        aiModel: result.ai_model,
+        inferenceTimeMs: result.inference_time_ms,
+        complexityScore: result.complexity_score,
+        workflowMessages: result.workflow_messages,
+        disclaimer: result.disclaimer,
+      },
+    });
   } catch (error) {
+    console.error(`[Triage] Error analyzing session ${req.params.sessionId}:`, error.message);
     // Fallback response if triage service is unavailable
     res.json({
       success: true,
@@ -174,6 +223,8 @@ app.post('/api/v1/triage/sessions/:sessionId/analyze', async (req, res) => {
         primaryAssessment: 'Cloud analysis unavailable. Please use local triage.',
         recommendedAction: 'Visit a healthcare facility for proper evaluation.',
         escalatedToCloud: false,
+        aiModel: 'fallback',
+        inferenceTimeMs: 0,
       },
     });
   }

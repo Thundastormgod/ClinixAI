@@ -1,38 +1,17 @@
-// Copyright 2024 ClinixAI. All rights reserved.
-// SPDX-License-Identifier: MIT
-//
-// Voice Triage Screen
-// Presentation layer for symptom input and triage results
-// Uses Cactus SDK for on-device LLM inference
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/ai/cactus_service.dart';
 import '../../../core/ai/ai_providers.dart';
 
-// =============================================================================
-// TRIAGE SCREEN
-// =============================================================================
-
-/// Triage Screen Widget.
-///
+/// Triage Screen
+/// 
 /// Allows patients to describe symptoms via text input,
 /// using Cactus SDK for on-device LLM inference.
-///
-/// ## Features
-///
-/// - Text-based symptom input
-/// - Real-time model status indicator
-/// - Urgency-colored result display
-/// - Differential diagnosis visualization
-/// - Red flag warnings
-///
-/// ## Note
-///
-/// Voice input would require a separate speech-to-text package
+/// 
+/// Note: Voice input would require a separate speech-to-text package
 /// (e.g., speech_to_text, google_speech) as the cactus package
-/// doesn't include built-in Whisper support for Flutter.
+/// doesn't include built-in Whisper support.
 class VoiceTriageScreen extends ConsumerStatefulWidget {
   const VoiceTriageScreen({super.key});
 

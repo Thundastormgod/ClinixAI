@@ -1,61 +1,17 @@
-// Copyright 2024 ClinixAI. All rights reserved.
-// SPDX-License-Identifier: MIT
-//
 // ClinixAI Cactus Service - On-Device LLM Inference
 // Using Cactus SDK v1.2.0 for LiquidAI LFM2 model inference
-//
-// Architecture:
-// ┌─────────────────────────────────────────────────────────────────┐
-// │                       CactusService                             │
-// ├─────────────────────────────────────────────────────────────────┤
-// │  MODELS                  │  CAPABILITIES                        │
-// │  ├─ LFM2-1.2B-RAG       │  ├─ Text Generation (Chat)           │
-// │  ├─ LFM2-VL-450M        │  ├─ Vision Analysis                  │
-// │  └─ Qwen3-0.6B          │  ├─ Speech-to-Text (Whisper)         │
-// │                          │  └─ RAG (Embeddings + Search)        │
-// └─────────────────────────────────────────────────────────────────┘
-//
-// Design Patterns:
-// - Singleton-ready: Can be used as singleton or instantiated
-// - Callback-based: Progress and status via callbacks
-// - Defensive: Null checks and error handling throughout
 
 import 'dart:async';
 import 'package:cactus/cactus.dart';
 import 'package:flutter/foundation.dart';
-import 'package:meta/meta.dart';
 
-// ============================================================================
-// MODEL CONFIGURATION
-// ============================================================================
-
-/// Configuration for local AI models.
-///
-/// Immutable configuration object that defines model parameters for
-/// LiquidAI LFM2, Qwen, and other supported local LLMs.
-///
-/// Use the predefined configurations for common models:
-/// - [CactusModelConfig.lfm2Rag] - Best for RAG-enhanced triage
-/// - [CactusModelConfig.lfm2Vision] - For medical image analysis
-/// - [CactusModelConfig.qwen3Small] - Lightweight general-purpose
-@immutable
+/// Configuration for local AI models
 class CactusModelConfig {
-  /// Internal model identifier used by Cactus SDK.
   final String modelName;
-
-  /// Human-readable display name for UI.
   final String displayName;
-
-  /// Maximum context window size in tokens.
   final int contextSize;
-
-  /// Sampling temperature (0.0 = deterministic, 1.0 = creative).
   final double temperature;
-
-  /// Maximum tokens to generate per completion.
   final int maxTokens;
-
-  /// Whether this model supports RAG-enhanced inference.
   final bool enableRAG;
 
   const CactusModelConfig({
@@ -96,25 +52,10 @@ class CactusModelConfig {
   );
 }
 
-// ============================================================================
-// SPEECH-TO-TEXT CONFIGURATION
-// ============================================================================
-
-/// Configuration for speech-to-text (Whisper) models.
-///
-/// Immutable configuration for Whisper-based transcription models.
-/// Use predefined configurations for common use cases:
-/// - [STTModelConfig.whisperTiny] - Fast, lower accuracy
-/// - [STTModelConfig.whisperBase] - Balanced speed/accuracy
-@immutable
+/// Speech-to-text model configuration
 class STTModelConfig {
-  /// Internal model identifier.
   final String modelName;
-
-  /// Human-readable display name.
   final String displayName;
-
-  /// ISO 639-1 language code for transcription.
   final String language;
 
   const STTModelConfig({
@@ -136,32 +77,15 @@ class STTModelConfig {
   );
 }
 
-// ============================================================================
-// RESULT TYPES
-// ============================================================================
-
-/// Result of a local LLM inference.
-///
-/// Immutable result object containing the model's response along with
-/// metadata about token generation and processing time.
-@immutable
+/// Result of a local LLM inference
 class CactusResult {
-  /// The generated text response.
   final String response;
-
-  /// Number of tokens generated (0 if unavailable).
   final int tokensGenerated;
-
-  /// Time taken for inference.
   final Duration processingTime;
-
-  /// Whether inference completed successfully.
   final bool success;
-
-  /// Error message if inference failed.
   final String? error;
 
-  const CactusResult({
+  CactusResult({
     required this.response,
     this.tokensGenerated = 0,
     required this.processingTime,
@@ -169,7 +93,6 @@ class CactusResult {
     this.error,
   });
 
-  /// Creates an error result with the given message.
   factory CactusResult.error(String message) {
     return CactusResult(
       response: '',
@@ -180,27 +103,15 @@ class CactusResult {
   }
 }
 
-/// Result of speech-to-text transcription.
-///
-/// Immutable result object containing the transcribed text and metadata.
-@immutable
+/// Result of speech-to-text transcription
 class TranscriptionResult {
-  /// The transcribed text.
   final String text;
-
-  /// Time taken for transcription.
   final Duration processingTime;
-
-  /// Whether transcription completed successfully.
   final bool success;
-
-  /// Error message if transcription failed.
   final String? error;
-
-  /// Detected or configured language.
   final String? language;
 
-  const TranscriptionResult({
+  TranscriptionResult({
     required this.text,
     required this.processingTime,
     this.success = true,
@@ -208,7 +119,6 @@ class TranscriptionResult {
     this.language,
   });
 
-  /// Creates an error result with the given message.
   factory TranscriptionResult.error(String message) {
     return TranscriptionResult(
       text: '',
@@ -219,31 +129,16 @@ class TranscriptionResult {
   }
 }
 
-/// Result of vision (image) analysis.
-///
-/// Immutable result object containing the visual analysis description
-/// and detected medical conditions with confidence scores.
-@immutable
+/// Result of vision analysis
 class VisionResult {
-  /// Detailed description of the analyzed image.
   final String description;
-
-  /// List of detected medical conditions (e.g., 'rash', 'swelling').
   final List<String> detectedConditions;
-
-  /// Overall confidence score (0.0 - 1.0).
   final double confidence;
-
-  /// Time taken for analysis.
   final Duration processingTime;
-
-  /// Whether analysis completed successfully.
   final bool success;
-
-  /// Error message if analysis failed.
   final String? error;
 
-  const VisionResult({
+  VisionResult({
     required this.description,
     this.detectedConditions = const [],
     this.confidence = 0.0,
@@ -252,7 +147,6 @@ class VisionResult {
     this.error,
   });
 
-  /// Creates an error result with the given message.
   factory VisionResult.error(String message) {
     return VisionResult(
       description: '',
@@ -263,25 +157,12 @@ class VisionResult {
   }
 }
 
-/// RAG document for medical knowledge.
-///
-/// Represents a document that can be added to the local RAG knowledge base
-/// for retrieval-augmented generation.
-@immutable
+/// RAG document for medical knowledge
 class RAGDocument {
-  /// Unique identifier for the document.
   final String id;
-
-  /// Original file name.
   final String fileName;
-
-  /// Full text content of the document.
   final String content;
-
-  /// Size in bytes.
   final int fileSize;
-
-  /// When the document was added.
   final DateTime addedAt;
 
   RAGDocument({
@@ -293,97 +174,38 @@ class RAGDocument {
   }) : addedAt = addedAt ?? DateTime.now();
 }
 
-// ============================================================================
-// CACTUS SERVICE
-// ============================================================================
-
-/// ClinixAI on-device AI service using Cactus SDK v1.2.0.
-///
-/// Provides comprehensive on-device AI capabilities:
-/// - **Text Generation**: Chat completions with LiquidAI LFM2
-/// - **Vision Analysis**: Medical image analysis with LFM2-VL
-/// - **Speech-to-Text**: Whisper-based transcription
-/// - **RAG**: Retrieval-augmented generation with embeddings
-///
-/// ## Usage
-/// ```dart
-/// final cactus = CactusService();
-/// await cactus.initialize();
-/// await cactus.downloadLLMModel(CactusModelConfig.lfm2Rag);
-/// await cactus.loadLLMModel(CactusModelConfig.lfm2Rag);
-///
-/// final result = await cactus.generateCompletion(
-///   prompt: 'Patient has fever and headache',
-/// );
-/// ```
-///
-/// ## Error Handling
-/// All methods return result objects with `success` flags and optional
-/// `error` messages rather than throwing exceptions for inference errors.
+/// ClinixAI on-device AI service using Cactus SDK v1.2.0
 class CactusService {
-  // ──────────────────────────────────────────────────────────────────
-  // CACTUS SDK INSTANCES
-  // ──────────────────────────────────────────────────────────────────
-
+  // Cactus SDK instances
   CactusLM? _lm;
   CactusSTT? _stt;
   CactusRAG? _rag;
 
-  // ──────────────────────────────────────────────────────────────────
-  // CURRENT CONFIGURATIONS
-  // ──────────────────────────────────────────────────────────────────
-
+  // Current configurations
   CactusModelConfig? _currentLMConfig;
   CactusModelConfig? _currentVisionConfig;
   STTModelConfig? _currentSTTConfig;
 
-  // ──────────────────────────────────────────────────────────────────
-  // STATE TRACKING
-  // ──────────────────────────────────────────────────────────────────
-
+  // State tracking
   bool _isInitialized = false;
   bool _isLMLoaded = false;
   bool _isSTTLoaded = false;
   bool _isRAGInitialized = false;
   bool _isDownloading = false;
 
-  // ──────────────────────────────────────────────────────────────────
-  // CALLBACKS
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Callback for download progress updates.
+  // Callbacks
   void Function(double? progress, String status, bool isError)? onDownloadProgress;
-
-  /// Callback for status change notifications.
   void Function(String status)? onStatusChange;
 
-  // ──────────────────────────────────────────────────────────────────
-  // PUBLIC GETTERS
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Whether the service has been initialized.
+  // Getters
   bool get isInitialized => _isInitialized;
-
-  /// Whether a language model is currently loaded.
   bool get isLMLoaded => _isLMLoaded;
-
-  /// Whether the speech-to-text model is loaded.
   bool get isSTTLoaded => _isSTTLoaded;
-
-  /// Whether RAG has been initialized.
   bool get isRAGInitialized => _isRAGInitialized;
-
-  /// Whether a model download is in progress.
   bool get isDownloading => _isDownloading;
-
-  /// Display name of the currently loaded model, or null if none.
   String? get currentModelName => _currentLMConfig?.displayName;
 
-  // ──────────────────────────────────────────────────────────────────
-  // INITIALIZATION
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Initialize the Cactus service.
+  /// Initialize the Cactus service
   Future<void> initialize() async {
     if (_isInitialized) return;
 
@@ -399,11 +221,7 @@ class CactusService {
     }
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // MODEL DOWNLOAD
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Downloads an LLM model from the Cactus model repository.
+  /// Download an LLM model
   Future<bool> downloadLLMModel(CactusModelConfig config) async {
     if (!_isInitialized) await initialize();
     if (_isDownloading) return false;
@@ -459,11 +277,7 @@ class CactusService {
     }
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // MODEL LOADING
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Loads an LLM model into memory for inference.
+  /// Load an LLM model for inference
   Future<bool> loadLLMModel(CactusModelConfig config) async {
     if (!_isInitialized) await initialize();
 
@@ -544,16 +358,7 @@ class CactusService {
     }
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // TEXT GENERATION
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Generates a text completion (chat response).
-  ///
-  /// Uses the currently loaded LLM to generate a response based on the
-  /// provided prompt, optional system prompt, and conversation history.
-  ///
-  /// Returns a [CactusResult] with the generated text.
+  /// Generate a completion (chat response)
   Future<CactusResult> generateCompletion({
     required String prompt,
     String? systemPrompt,
@@ -666,13 +471,7 @@ class CactusService {
     }
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // VISION ANALYSIS
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Analyzes an image using the vision model.
-  ///
-  /// Uses LFM2-VL to analyze medical images and detect visible conditions.
+  /// Analyze an image with the vision model
   Future<VisionResult> analyzeImage({
     required String imagePath,
     String? prompt,
@@ -729,11 +528,7 @@ class CactusService {
     }
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // SPEECH-TO-TEXT
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Transcribes audio to text using Whisper.
+  /// Transcribe audio to text
   Future<TranscriptionResult> transcribe(String audioFilePath) async {
     if (!_isSTTLoaded || _stt == null) {
       return TranscriptionResult.error('STT model not loaded');
@@ -758,11 +553,7 @@ class CactusService {
     }
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // RAG OPERATIONS
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Adds a document to the RAG knowledge base.
+  /// Add a document to the RAG knowledge base
   Future<bool> addRAGDocument({
     required String fileName,
     required String content,
@@ -847,11 +638,7 @@ Please provide an accurate response based on the above context.''';
     return result.embeddings;
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // LIFECYCLE MANAGEMENT
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Unloads the LLM model from memory.
+  /// Unload the LLM model
   Future<void> unloadLLM() async {
     if (_lm != null && _isLMLoaded) {
       _lm!.unload();

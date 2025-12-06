@@ -1,27 +1,5 @@
-// Copyright 2024 ClinixAI. All rights reserved.
-// SPDX-License-Identifier: MIT
-//
 // ClinixAI Knowledge Base Service
 // Manages medical knowledge documents for RAG-enhanced triage
-//
-// Architecture:
-// ┌─────────────────────────────────────────────────────────────────┐
-// │                   KnowledgeBaseService                          │
-// ├─────────────────────────────────────────────────────────────────┤
-// │  DOCUMENT PIPELINE                                              │
-// │  1. Ingest → 2. Chunk → 3. Embed → 4. Store → 5. Search       │
-// ├─────────────────────────────────────────────────────────────────┤
-// │  STORAGE                 │  SEARCH                              │
-// │  ├─ Isar Database        │  ├─ Semantic (Embeddings)            │
-// │  ├─ LocalRAGDocument     │  ├─ Keyword (Fallback)               │
-// │  └─ LocalRAGChunk        │  └─ Cosine Similarity                │
-// └─────────────────────────────────────────────────────────────────┘
-//
-// Design Patterns:
-// - Singleton: Single instance for consistent state
-// - Strategy: Multiple chunking strategies
-// - Template Method: Document processing pipeline
-// - Facade: Simple interface for complex operations
 
 import 'dart:async';
 import 'dart:convert';
@@ -30,58 +8,29 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:isar/isar.dart';
-import 'package:meta/meta.dart';
 
 import '../database/collections/local_rag_document.dart';
 import 'cactus_service.dart';
 
-// ============================================================================
-// CHUNKING CONFIGURATION
-// ============================================================================
-
-/// Chunking strategy for document processing.
-///
-/// Different strategies work better for different document types:
-/// - [fixedSize]: Best for uniform documents
-/// - [sentence]: Best for conversational content
-/// - [paragraph]: Best for structured text
-/// - [section]: Best for Markdown with headers
-/// - [semantic]: Most accurate but requires LLM
+/// Chunking strategy for documents
 enum ChunkingStrategy {
-  /// Fixed size chunks (default 512 chars with 50 char overlap).
+  /// Fixed size chunks (default 512 chars with 50 char overlap)
   fixedSize,
-
-  /// Sentence-based chunking.
+  /// Sentence-based chunking
   sentence,
-
-  /// Paragraph-based chunking (split on double newlines).
+  /// Paragraph-based chunking (split on double newlines)
   paragraph,
-
-  /// Section-based (split on markdown headers).
+  /// Section-based (split on markdown headers)
   section,
-
-  /// Semantic chunking (uses LLM to identify break points).
+  /// Semantic chunking (uses LLM to identify break points)
   semantic,
 }
 
-/// Configuration for document chunking.
-///
-/// Controls how documents are split into searchable chunks.
-/// Use predefined configurations for common use cases:
-/// - [ChunkConfig.medical]: Optimized for medical documents
-/// - [ChunkConfig.compact]: For constrained memory environments
-@immutable
+/// Configuration for document chunking
 class ChunkConfig {
-  /// The chunking strategy to use.
   final ChunkingStrategy strategy;
-
-  /// Maximum size of each chunk in characters.
   final int maxChunkSize;
-
-  /// Number of characters to overlap between chunks.
   final int overlapSize;
-
-  /// Minimum chunk size (smaller chunks are discarded).
   final int minChunkSize;
 
   const ChunkConfig({
@@ -91,7 +40,6 @@ class ChunkConfig {
     this.minChunkSize = 100,
   });
 
-  /// Configuration optimized for medical documents.
   static const medical = ChunkConfig(
     strategy: ChunkingStrategy.section,
     maxChunkSize: 800,
@@ -99,7 +47,6 @@ class ChunkConfig {
     minChunkSize: 150,
   );
 
-  /// Compact configuration for constrained environments.
   static const compact = ChunkConfig(
     strategy: ChunkingStrategy.fixedSize,
     maxChunkSize: 256,
@@ -108,93 +55,41 @@ class ChunkConfig {
   );
 }
 
-// ============================================================================
-// KNOWLEDGE BASE SERVICE
-// ============================================================================
-
-/// Knowledge Base Service for ClinixAI.
-///
-/// Provides comprehensive document management and semantic search:
-/// - **Document Ingestion**: Add documents with intelligent chunking
-/// - **Embedding Generation**: Generate embeddings using local LLM
-/// - **Semantic Search**: Find relevant context using cosine similarity
-/// - **Pre-loaded Content**: Bundled WHO guidelines and medical references
-///
-/// ## Usage
-/// ```dart
-/// final kb = KnowledgeBaseService.instance;
-/// await kb.initialize(isar: database, cactusService: cactus);
-/// await kb.loadBundledKnowledgeBase();
-///
-/// final results = await kb.search('malaria symptoms', limit: 5);
-/// ```
-///
-/// ## Document Types
-/// The service supports various document types for categorization:
-/// - Medical guidelines (WHO, CDC)
-/// - Drug references
-/// - Emergency protocols
-/// - Patient history (per-patient context)
+/// Knowledge Base Service for ClinixAI
+/// 
+/// Provides:
+/// - Document ingestion with intelligent chunking
+/// - Embedding generation and persistence
+/// - Semantic search with source attribution
+/// - Pre-loaded medical knowledge base
+/// - Document management for CHWs
 class KnowledgeBaseService {
-  // ──────────────────────────────────────────────────────────────────
-  // SINGLETON
-  // ──────────────────────────────────────────────────────────────────
-
+  // Singleton
   static KnowledgeBaseService? _instance;
-
-  /// Global singleton instance.
-  static KnowledgeBaseService get instance =>
-      _instance ??= KnowledgeBaseService._();
-
+  static KnowledgeBaseService get instance => _instance ??= KnowledgeBaseService._();
   KnowledgeBaseService._();
 
-  // ──────────────────────────────────────────────────────────────────
-  // DEPENDENCIES
-  // ──────────────────────────────────────────────────────────────────
-
+  // Dependencies
   Isar? _isar;
   CactusService? _cactusService;
-
-  // ──────────────────────────────────────────────────────────────────
-  // STATE
-  // ──────────────────────────────────────────────────────────────────
-
+  
+  // State
   bool _isInitialized = false;
   bool _isLoading = false;
   int _documentCount = 0;
   int _chunkCount = 0;
-
-  // ──────────────────────────────────────────────────────────────────
-  // CALLBACKS
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Callback for loading progress updates.
+  
+  // Callbacks
   void Function(String status, double? progress)? onLoadProgress;
-
-  /// Callback for error notifications.
   void Function(String error)? onError;
 
-  // ──────────────────────────────────────────────────────────────────
-  // PUBLIC GETTERS
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Whether the service has been initialized.
+  // Getters
   bool get isInitialized => _isInitialized;
-
-  /// Whether documents are currently being loaded.
   bool get isLoading => _isLoading;
-
-  /// Total number of documents in the knowledge base.
   int get documentCount => _documentCount;
-
-  /// Total number of chunks across all documents.
   int get chunkCount => _chunkCount;
 
-  // ──────────────────────────────────────────────────────────────────
-  // INITIALIZATION
-  // ──────────────────────────────────────────────────────────────────
-
-  /// Initializes the knowledge base service.
+  /// Initialize the knowledge base service
   Future<void> initialize({
     required Isar isar,
     required CactusService cactusService,
@@ -1028,71 +923,38 @@ class _BundledDoc {
   });
 }
 
-// ============================================================================
-// RESULT TYPES
-// ============================================================================
-
-/// RAG context with attributions.
-///
-/// Contains the assembled context from multiple chunks along with
-/// source attributions for transparency and citation.
-@immutable
+/// RAG context with attributions
 class RAGContext {
-  /// The combined context text from all matched chunks.
   final String context;
-
-  /// List of source attributions for the context.
   final List<String> attributions;
-
-  /// Number of chunks included in the context.
   final int chunkCount;
-
-  /// Estimated token count for the context.
   final int estimatedTokens;
 
-  const RAGContext({
+  RAGContext({
     required this.context,
     required this.attributions,
     required this.chunkCount,
     required this.estimatedTokens,
   });
 
-  /// Whether any context was found.
   bool get hasContext => context.isNotEmpty;
 
-  /// Formats attributions for display in responses.
   String get formattedAttributions => attributions.isNotEmpty
       ? '\n\n📚 Sources:\n${attributions.map((a) => '• $a').join('\n')}'
       : '';
 }
 
-/// Knowledge base statistics.
-///
-/// Provides metrics about the knowledge base for monitoring and debugging.
-@immutable
+/// Knowledge base statistics
 class KnowledgeBaseStats {
-  /// Total number of documents.
   final int documentCount;
-
-  /// Total number of chunks across all documents.
   final int chunkCount;
-
-  /// Total character count across all documents.
   final int totalCharacters;
-
-  /// Number of chunks that have embeddings.
   final int chunksWithEmbeddings;
-
-  /// Document count by type.
   final Map<RAGDocumentType, int> documentsByType;
-
-  /// Number of system (bundled) documents.
   final int systemDocuments;
-
-  /// Number of user-added custom documents.
   final int customDocuments;
 
-  const KnowledgeBaseStats({
+  KnowledgeBaseStats({
     required this.documentCount,
     required this.chunkCount,
     required this.totalCharacters,
@@ -1102,18 +964,16 @@ class KnowledgeBaseStats {
     required this.customDocuments,
   });
 
-  /// Percentage of chunks with embeddings (0.0 - 1.0).
-  double get embeddingCoverage =>
+  double get embeddingCoverage => 
       chunkCount > 0 ? chunksWithEmbeddings / chunkCount : 0.0;
 
-  /// Converts statistics to a JSON-serializable map.
   Map<String, dynamic> toJson() => {
-        'documentCount': documentCount,
-        'chunkCount': chunkCount,
-        'totalCharacters': totalCharacters,
-        'chunksWithEmbeddings': chunksWithEmbeddings,
-        'embeddingCoverage': '${(embeddingCoverage * 100).toStringAsFixed(1)}%',
-        'systemDocuments': systemDocuments,
-        'customDocuments': customDocuments,
-      };
+    'documentCount': documentCount,
+    'chunkCount': chunkCount,
+    'totalCharacters': totalCharacters,
+    'chunksWithEmbeddings': chunksWithEmbeddings,
+    'embeddingCoverage': '${(embeddingCoverage * 100).toStringAsFixed(1)}%',
+    'systemDocuments': systemDocuments,
+    'customDocuments': customDocuments,
+  };
 }

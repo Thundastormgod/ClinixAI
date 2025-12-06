@@ -1,10 +1,3 @@
-// Copyright 2024 ClinixAI. All rights reserved.
-// SPDX-License-Identifier: MIT
-//
-// Triage Session Collection
-// Represents a single triage interaction with metadata
-// Supports offline-first with cloud sync queue
-
 import 'package:isar/isar.dart';
 
 part 'local_triage_session.g.dart';
