@@ -967,7 +967,8 @@ class RAGQueryResponse(BaseModel):
 @app.post("/rag/upload-pdf", response_model=PDFUploadResponse)
 async def upload_pdf_for_rag(
     file: UploadFile = File(...),
-    extract_entities: bool = True,
+    extract_entities: bool = False,  # DEFAULT OFF to save OpenRouter credits
+    batch_size: int = 10,  # Process N chunks at a time for entity extraction
     background_tasks: BackgroundTasks = None
 ):
     """
@@ -975,9 +976,12 @@ async def upload_pdf_for_rag(
     
     The PDF will be:
     1. Split into chunks
-    2. Embedded using sentence transformers
-    3. Stored in Neo4j with vector embeddings
-    4. Optionally: Entities extracted using OpenRouter AI
+    2. Embedded using sentence transformers (FREE - local)
+    3. Stored in Neo4j with vector embeddings (FREE - local)
+    4. Optionally: Entities extracted using OpenRouter AI (COSTS CREDITS)
+    
+    Set extract_entities=true to enable AI entity extraction (uses OpenRouter credits).
+    Set batch_size to control how many chunks are processed (lower = less cost).
     
     This enables semantic search and knowledge graph queries.
     """
@@ -999,14 +1003,21 @@ async def upload_pdf_for_rag(
         # Get RAG service
         rag_service = get_advanced_rag_service()
         
-        # Ingest PDF
+        # Ingest PDF (extract_entities=False by default to save credits)
         stats = await rag_service.ingest_pdf(
             pdf_path=tmp_path,
-            extract_entities=extract_entities
+            extract_entities=extract_entities,
+            batch_size=batch_size  # Limit entity extraction to N chunks max
         )
         
         # Clean up temp file
         _os.unlink(tmp_path)
+        
+        # Build helpful message
+        if extract_entities:
+            cost_msg = f" (entity extraction on {min(batch_size, stats.get('chunks', 0))} chunks used OpenRouter credits)"
+        else:
+            cost_msg = " (FREE - no OpenRouter credits used)"
         
         return PDFUploadResponse(
             success=True,
@@ -1015,7 +1026,7 @@ async def upload_pdf_for_rag(
             chunks=stats.get("chunks", 0),
             entities_extracted=stats.get("entities_extracted", 0),
             relationships_extracted=stats.get("relationships_extracted", 0),
-            message=f"Successfully ingested {file.filename}"
+            message=f"Successfully ingested {file.filename}{cost_msg}"
         )
         
     except Exception as e:

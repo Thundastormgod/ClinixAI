@@ -207,7 +207,8 @@ Extract all medical knowledge. Return ONLY valid JSON."""
         site_name: str = None
     ):
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
-        self.model = model or os.getenv("OPENROUTER_DEFAULT_MODEL", "anthropic/claude-3.5-sonnet")
+        # Use cheaper Llama model by default for entity extraction (saves ~90% vs Claude)
+        self.model = model or os.getenv("OPENROUTER_EXTRACTION_MODEL", "meta-llama/llama-3.1-70b-instruct")
         self.site_url = site_url or os.getenv("OPENROUTER_SITE_URL", "https://clinixai.health")
         self.site_name = site_name or os.getenv("OPENROUTER_SITE_NAME", "ClinixAI")
         
@@ -463,28 +464,28 @@ class Neo4jVectorStore:
             
             return [dict(record) for record in result]
     
-    def keyword_search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def keyword_search(self, search_text: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Search chunks by keyword (full-text)"""
         with self._driver.session(database=self.database) as session:
             result = session.run("""
-                CALL db.index.fulltext.queryNodes('chunk_text', $query)
+                CALL db.index.fulltext.queryNodes('chunk_text', $search_text)
                 YIELD node, score
                 RETURN node.id AS id, node.text AS text, node.document_id AS doc_id, score
                 LIMIT $limit
-            """, query=query, limit=limit)
+            """, search_text=search_text, limit=limit)
             
             return [dict(record) for record in result]
     
-    def entity_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def entity_search(self, search_text: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search entities by name/description"""
         with self._driver.session(database=self.database) as session:
             result = session.run("""
-                CALL db.index.fulltext.queryNodes('entity_search', $query)
+                CALL db.index.fulltext.queryNodes('entity_search', $search_text)
                 YIELD node, score
                 RETURN labels(node)[0] AS type, node.name AS name, 
                        node.description AS description, score
                 LIMIT $limit
-            """, query=query, limit=limit)
+            """, search_text=search_text, limit=limit)
             
             return [dict(record) for record in result]
     
@@ -656,7 +657,8 @@ class AdvancedRAGService:
     async def ingest_pdf(
         self,
         pdf_path: str,
-        extract_entities: bool = True,
+        extract_entities: bool = False,  # DEFAULT OFF to save OpenRouter credits
+        batch_size: int = 10,  # Process N chunks at a time for entity extraction
         progress_callback: callable = None
     ) -> Dict[str, Any]:
         """
@@ -664,11 +666,19 @@ class AdvancedRAGService:
         
         Args:
             pdf_path: Path to PDF file
-            extract_entities: Use LLM to extract medical entities
+            extract_entities: Use LLM to extract medical entities (costs OpenRouter credits!)
+            batch_size: How many chunks to process for entity extraction (lower = less cost)
             progress_callback: Optional callback(progress, total, message)
         
         Returns:
             Ingestion statistics
+        
+        Cost-saving notes:
+        - Embeddings are FREE (local sentence-transformers)
+        - Neo4j storage is FREE (local database)
+        - Entity extraction uses OpenRouter API (COSTS CREDITS)
+        - Set extract_entities=False for free ingestion (semantic search still works!)
+        - Use batch_size to limit entity extraction costs
         """
         if not self._initialized:
             self.initialize()
@@ -707,6 +717,9 @@ class AdvancedRAGService:
         total_entities = 0
         total_relationships = 0
         
+        # Track how many chunks we've done entity extraction for
+        entity_extraction_count = 0
+        
         for i, chunk_text in enumerate(chunks):
             if progress_callback:
                 progress = 15 + int(75 * i / len(chunks))
@@ -714,7 +727,7 @@ class AdvancedRAGService:
             
             chunk_id = f"{doc_id}_chunk_{i}"
             
-            # Generate embedding
+            # Generate embedding (FREE - local)
             embedding = self.embedder.embed_single(chunk_text)
             
             # Create chunk object
@@ -727,13 +740,15 @@ class AdvancedRAGService:
                 embedding=embedding
             )
             
-            # Store chunk with embedding
+            # Store chunk with embedding (FREE - local Neo4j)
             self.vector_store.add_chunk(chunk)
             
-            # Extract entities (if enabled)
-            if extract_entities:
+            # Extract entities (if enabled AND within batch limit)
+            # This is the ONLY part that costs OpenRouter credits!
+            if extract_entities and entity_extraction_count < batch_size:
                 try:
                     entities, relationships = await self.extractor.extract(chunk_text)
+                    entity_extraction_count += 1
                     
                     # Build entity map for relationship linking
                     entity_map = {e.id: e.name for e in entities}
@@ -748,6 +763,10 @@ class AdvancedRAGService:
                     for rel in relationships:
                         self.vector_store.add_relationship(rel, entity_map)
                         total_relationships += 1
+                    
+                    # Log batch progress
+                    if entity_extraction_count >= batch_size:
+                        logger.info(f"Reached batch limit ({batch_size}), skipping entity extraction for remaining chunks")
                         
                 except Exception as e:
                     logger.warning(f"Entity extraction failed for chunk {i}: {e}")
@@ -820,7 +839,7 @@ class AdvancedRAGService:
         semantic_results = self.vector_store.vector_search(query_embedding, limit=top_k)
         
         # 2. Keyword search (full-text)
-        keyword_results = self.vector_store.keyword_search(query, limit=top_k)
+        keyword_results = self.vector_store.keyword_search(search_text=query, limit=top_k)
         
         # 3. Merge and deduplicate results
         seen_ids = set()
@@ -854,7 +873,7 @@ class AdvancedRAGService:
         # 4. Entity search
         entities = []
         if include_entities:
-            entity_results = self.vector_store.entity_search(query, limit=10)
+            entity_results = self.vector_store.entity_search(search_text=query, limit=10)
             entities = entity_results
         
         # 5. Graph context (symptom -> disease paths)
