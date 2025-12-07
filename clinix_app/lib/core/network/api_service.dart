@@ -246,7 +246,7 @@ class ApiService {
         case 504:
           return ServerException('Server error. Please try again later.');
         default:
-          return ApiException('API error (${statusCode}): ${data['error'] ?? 'Unknown error'}');
+          return ApiException('API error ($statusCode): ${data['error'] ?? 'Unknown error'}');
       }
     }
 

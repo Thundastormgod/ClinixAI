@@ -129,7 +129,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                       filled: true,
-                      fillColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                      fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
                     ),
                     initialCountryCode: 'KE', // Default to Kenya
                     onChanged: (phone) {
@@ -310,7 +310,7 @@ class _OtpInputFieldState extends State<OtpInputField> {
                 borderRadius: BorderRadius.circular(8),
               ),
               filled: true,
-              fillColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+              fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
             ),
             style: Theme.of(context).textTheme.headlineMedium?.copyWith(
               fontWeight: FontWeight.bold,

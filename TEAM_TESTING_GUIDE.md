@@ -340,6 +340,185 @@ flutter run -d android
 
 ---
 
+## 🗄️ Sharing the Neo4j Knowledge Base
+
+### Why Share the Database?
+
+Uploading and processing PDFs can take time:
+- **5 PDFs**: ~5-10 minutes (chunking + embeddings)
+- **50 PDFs**: ~30-60 minutes
+- **500 PDFs**: Several hours
+
+Instead of each team member repeating this process, **share a pre-loaded database backup**.
+
+### Creating a Backup (For the Person With Documents)
+
+```bash
+# 1. Verify your knowledge base is loaded
+curl http://localhost:8000/rag/stats
+
+# Output should show:
+# {
+#   "database_stats": {
+#     "Chunk": 2773,
+#     "Document": 5,
+#     ...
+#   }
+# }
+
+# 2. Run the backup script
+# Windows:
+.\backup_neo4j.ps1
+
+# Linux/Mac:
+chmod +x backup_neo4j.sh
+./backup_neo4j.sh
+
+# 3. Find the backup file
+# Location: neo4j_backup/clinixai_knowledge_YYYYMMDD_HHMMSS.dump
+# Size: ~10-20 MB for 5 PDFs
+
+# 4. Compress (optional, recommended for large files)
+# Windows:
+Compress-Archive -Path neo4j_backup/clinixai_knowledge_*.dump -DestinationPath clinixai_knowledge.zip
+
+# Linux/Mac:
+tar -czf clinixai_knowledge.tar.gz neo4j_backup/clinixai_knowledge_*.dump
+
+# 5. Upload to shared storage
+# - Google Drive (best for team sharing)
+# - Dropbox
+# - GitHub Release (if < 100MB)
+# - OneDrive
+# - Team server
+```
+
+### Restoring a Backup (For Team Members)
+
+```bash
+# 1. Download the backup file from shared storage
+# Example: clinixai_knowledge_20250107_143022.dump
+
+# 2. Make sure Neo4j is running
+docker-compose up -d neo4j
+
+# 3. Run the restore script
+# Windows:
+.\restore_neo4j.ps1 neo4j_backup\clinixai_knowledge_20250107_143022.dump
+
+# Linux/Mac:
+chmod +x restore_neo4j.sh
+./restore_neo4j.sh neo4j_backup/clinixai_knowledge_20250107_143022.dump
+
+# 4. Wait for completion (~30 seconds)
+# You'll see:
+# ✅ Restore complete!
+
+# 5. Verify the restore
+curl http://localhost:8000/rag/stats
+
+# Should show the same stats as the original database
+```
+
+### What's Included in the Backup?
+
+✅ **Included:**
+- All document chunks (with text)
+- All vector embeddings
+- All extracted entities (symptoms, diseases, etc.)
+- All relationships in knowledge graph
+- Neo4j indexes and constraints
+
+❌ **NOT Included:**
+- The AI model (llama.cpp) - that's separate
+- Application code
+- Docker containers
+- Configuration files
+
+### Backup Best Practices
+
+1. **Version Your Backups**
+   ```
+   neo4j_backup/
+   ├── clinixai_v1_baseline_20250107.dump (5 PDFs, 2,773 chunks)
+   ├── clinixai_v2_expanded_20250115.dump (15 PDFs, 8,421 chunks)
+   └── clinixai_v3_full_20250201.dump (50 PDFs, 28,105 chunks)
+   ```
+
+2. **Document What's Included**
+   Create a `README.txt` alongside each backup:
+   ```
+   ClinixAI Knowledge Base Backup
+   Date: 2025-01-07
+   Chunks: 2,773
+   Documents: 5
+   - WHO Emergency Care Guidelines
+   - Malaria Treatment Protocol
+   - Typhoid Fever Handbook
+   - Cholera Response Manual
+   - General Triage Guidelines
+   ```
+
+3. **Compress Large Backups**
+   - Use `.zip` (Windows) or `.tar.gz` (Linux/Mac)
+   - Compression reduces size by ~50-70%
+   - Example: 100MB backup → 30-40MB compressed
+
+4. **Test Before Sharing**
+   Always test your backup on a clean instance:
+   ```bash
+   # Delete existing data
+   docker-compose down -v
+   docker-compose up -d
+   
+   # Restore your backup
+   .\restore_neo4j.ps1 backup.dump
+   
+   # Verify
+   curl http://localhost:8000/rag/stats
+   ```
+
+### Troubleshooting Backup/Restore
+
+**Problem**: "Neo4j container not found"
+```bash
+# Solution: Start Neo4j first
+docker-compose up -d neo4j
+sleep 10  # Wait for it to be ready
+.\backup_neo4j.ps1
+```
+
+**Problem**: "Restore failed: database already exists"
+```bash
+# Solution: The script should handle this, but if not:
+docker exec clinixai-neo4j cypher-shell -u neo4j -p clinixai_neo4j_password "DROP DATABASE neo4j IF EXISTS"
+.\restore_neo4j.ps1 backup.dump
+```
+
+**Problem**: "Backup file is corrupted"
+```bash
+# Solution: Verify the backup file
+# Windows:
+Get-FileHash backup.dump -Algorithm SHA256
+
+# Linux/Mac:
+sha256sum backup.dump
+
+# Compare hash with original to ensure file wasn't corrupted during transfer
+```
+
+**Problem**: "After restore, chunk count is 0"
+```bash
+# Solution: Wait for Neo4j to fully start
+docker logs clinixai-neo4j -f
+# Wait for: "Started."
+
+# Then check again
+curl http://localhost:8000/rag/stats
+```
+
+---
+
 ## 📞 Support
 
 - **GitHub Issues**: https://github.com/Thundastormgod/ClinixAI/issues

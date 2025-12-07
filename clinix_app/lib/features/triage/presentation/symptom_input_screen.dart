@@ -162,7 +162,7 @@ class _SymptomInputScreenState extends ConsumerState<SymptomInputScreen> {
             // Progress indicator
             LinearProgressIndicator(
               value: _symptoms.isEmpty ? 0.0 : 0.5,
-              backgroundColor: Theme.of(context).colorScheme.surfaceVariant,
+              backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
             ),
 
             Expanded(
@@ -386,7 +386,7 @@ class _PatientInfoSectionState extends State<_PatientInfoSection> {
                       labelText: 'Gender',
                       border: OutlineInputBorder(),
                     ),
-                    value: widget.initialGender,
+                    initialValue: widget.initialGender,
                     hint: const Text('Select gender'),
                     items: ['Male', 'Female', 'Other', 'Prefer not to say']
                         .map((gender) => DropdownMenuItem(
@@ -461,7 +461,7 @@ class _SymptomInputSectionState extends State<_SymptomInputSection> {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 filled: true,
-                fillColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
               ),
             ),
 
@@ -502,9 +502,9 @@ class _SymptomInputSectionState extends State<_SymptomInputSection> {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 filled: true,
-                fillColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
               ),
-              value: _bodyLocation,
+              initialValue: _bodyLocation,
               hint: const Text('Where is the symptom?'),
               items: widget.bodyLocations
                   .map((location) => DropdownMenuItem(
@@ -530,7 +530,7 @@ class _SymptomInputSectionState extends State<_SymptomInputSection> {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 filled: true,
-                fillColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
               ),
               keyboardType: TextInputType.number,
               onChanged: (value) {
@@ -613,7 +613,7 @@ class _QuickSymptomSelection extends StatelessWidget {
                 return ActionChip(
                   label: Text(symptom),
                   onPressed: () => onSymptomSelected(symptom),
-                  backgroundColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                  backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
                 );
               }).toList(),
             ),
@@ -781,7 +781,7 @@ class _VitalSignsSectionState extends State<_VitalSignsSection> {
                             borderRadius: BorderRadius.circular(8),
                           ),
                           filled: true,
-                          fillColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                          fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
                         ),
                         keyboardType: type == 'bloodPressure'
                             ? TextInputType.text

@@ -28,6 +28,15 @@ temp/
 # GGUF Model Files (~1-3GB each) - Teams must run download_model.ps1
 models/gguf/*.gguf
 
+# Neo4j Backups (share via Google Drive/Dropbox/GitHub Release)
+# These can be 10-200MB+ depending on document count
+neo4j_backup/*.dump
+neo4j_backup/*.tar.gz
+neo4j_backup/*.zip
+*.dump
+clinixai_knowledge*.zip
+clinixai_knowledge*.tar.gz
+
 # Python cache
 __pycache__/
 *.pyc

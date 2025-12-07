@@ -159,7 +159,7 @@ class TriageService {
         confidenceScore: 0.6,
         primaryAssessment: 'Offline Assessment: Symptoms recorded locally.',
         recommendedAction: 'Please consult a healthcare professional. Data will sync when online.',
-        differentialDiagnoses: [],
+        differentialDiagnoses: const [],
         escalatedToCloud: false,
         aiModel: 'offline-rule-based',
         inferenceTimeMs: 10,

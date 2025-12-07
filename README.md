@@ -149,6 +149,77 @@ curl -X POST http://localhost:8000/rag/upload-pdf \
 
 ---
 
+## 🗄️ Sharing the Knowledge Base (Neo4j Backup/Restore)
+
+**Problem**: Each team member having to upload and chunk PDFs individually wastes time and compute.
+
+**Solution**: Share a pre-loaded Neo4j database backup!
+
+### For the Person Who Has the Documents
+
+```bash
+# 1. After uploading all PDFs and building the knowledge graph
+curl http://localhost:8000/rag/stats  # Verify chunks are loaded
+
+# 2. Create a backup
+# Windows:
+.\backup_neo4j.ps1
+
+# Linux/Mac:
+chmod +x backup_neo4j.sh
+./backup_neo4j.sh
+
+# 3. Upload the backup file to shared storage
+# - Google Drive
+# - Dropbox
+# - GitHub Release (if < 100MB)
+# - Team server
+
+# Output: neo4j_backup/clinixai_knowledge_YYYYMMDD_HHMMSS.dump
+```
+
+### For Team Members Without Documents
+
+```bash
+# 1. Download the backup file from shared storage
+
+# 2. Restore the database
+# Windows:
+.\restore_neo4j.ps1 path\to\clinixai_knowledge_YYYYMMDD_HHMMSS.dump
+
+# Linux/Mac:
+chmod +x restore_neo4j.sh
+./restore_neo4j.sh path/to/clinixai_knowledge_YYYYMMDD_HHMMSS.dump
+
+# 3. Verify the restore
+curl http://localhost:8000/rag/stats
+# Should show the same chunk count as the original
+
+# 4. Test RAG queries
+curl -X POST http://localhost:8000/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What are malaria symptoms?", "top_k": 3}'
+```
+
+### What Gets Backed Up?
+
+- ✅ All document chunks (embeddings included)
+- ✅ All extracted entities (if any)
+- ✅ All relationships in the knowledge graph
+- ✅ Neo4j indexes and constraints
+- ❌ Does NOT include: The AI model (that's separate)
+
+### Backup File Size
+
+Typical sizes based on document count:
+- **5 PDFs** (~2,773 chunks): ~10-20 MB
+- **50 PDFs**: ~100-200 MB
+- **500 PDFs**: ~1-2 GB
+
+**Tip**: Compress before sharing: `Compress-Archive` (Windows) or `tar -czf` (Linux/Mac)
+
+---
+
 ## 📱 Flutter Frontend
 
 ### Web Version (No model download needed)
@@ -229,6 +300,14 @@ The model file (~1GB) is stored locally on your machine in the `models/gguf/` di
 - ✅ Model persists across container restarts
 - ✅ Model persists across `docker-compose down/up`
 - ✅ Only need to download once per machine
+
+### Do I need to upload documents every time?
+
+**No!** The Neo4j knowledge graph persists in a Docker volume. Once documents are uploaded and chunked, they stay there unless you delete the volume.
+
+**For teams**: Use the backup/restore scripts to share a pre-loaded database:
+1. Person with docs: `.\backup_neo4j.ps1` → Share the `.dump` file
+2. Team members: `.\restore_neo4j.ps1 backup.dump` → Instant knowledge base!
 
 ### Can I use a different model?
 

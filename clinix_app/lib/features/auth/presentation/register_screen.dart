@@ -153,7 +153,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     filled: true,
-                    fillColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                    fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
                   ),
                   validator: (value) {
                     if (value == null || value.trim().isEmpty) {
@@ -176,7 +176,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     filled: true,
-                    fillColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                    fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
                   ),
                   initialCountryCode: 'KE', // Default to Kenya
                   onChanged: (phone) {
@@ -202,7 +202,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                       filled: true,
-                      fillColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                      fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
                     ),
                     child: Text(
                       _dateOfBirth != null
@@ -227,9 +227,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     filled: true,
-                    fillColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                    fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
                   ),
-                  value: _gender.isNotEmpty ? _gender : null,
+                  initialValue: _gender.isNotEmpty ? _gender : null,
                   hint: const Text('Select your gender'),
                   items: _genders.map((gender) {
                     return DropdownMenuItem(
@@ -303,7 +303,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Column(

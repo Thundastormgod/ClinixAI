@@ -1,18 +1,15 @@
-import 'dart:convert';
 
 import 'package:clinix_app/core/network/api_service.dart';
 import 'package:clinix_app/core/network/auth_service.dart';
 import 'package:clinix_app/core/network/network_providers.dart';
 import 'package:clinix_app/core/network/triage_service.dart';
 import 'package:clinix_app/features/auth/presentation/login_screen.dart';
-import 'package:clinix_app/features/home/presentation/home_screen.dart';
 import 'package:clinix_app/features/triage/presentation/symptom_input_screen.dart';
 import 'package:clinix_app/features/triage/presentation/triage_results_screen.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mockito/mockito.dart';
 
 // Create a manual mock for ApiService since we can't run build_runner
 class MockApiService extends Fake implements ApiService {

@@ -469,7 +469,7 @@ class _VoiceTriageScreenState extends ConsumerState<VoiceTriageScreen> {
       // Try direct parse
       return Map<String, dynamic>.from(
         (response.startsWith('{')) 
-            ? (throw FormatException()) // Will be caught and retried
+            ? (throw const FormatException()) // Will be caught and retried
             : {}
       );
     } catch (_) {}

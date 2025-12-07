@@ -370,7 +370,7 @@ Session: ${session.sessionUuid.substring(0, 8)}...
 Urgency: ${result.urgencyDisplayText}
 Confidence: ${(result.confidenceScore * 100).toStringAsFixed(0)}%
 Inference Time: ${inferenceTimeMs}ms
-Route: ${_routeDescription}
+Route: $_routeDescription
 Model: $modelUsed
 Knowledge Base: ${usedKnowledgeBase ? '✓ Used' : 'Not used'}
 

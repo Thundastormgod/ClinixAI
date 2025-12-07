@@ -174,12 +174,12 @@ class HuggingFaceService {
     final stopwatch = Stopwatch()..start();
     
     // Build provider fallback chain
-    final providers = <ModelProvider>[
+    final providers = <ModelProvider>{
       provider ?? _config.preferredProvider,
       ModelProvider.qwen,
       ModelProvider.liquidAI,
       ModelProvider.mistral,
-    ].toSet().toList(); // Remove duplicates
+    }.toList(); // Remove duplicates
     
     // Try each provider
     for (final currentProvider in providers) {
@@ -385,7 +385,7 @@ class HuggingFaceService {
     List<String>? medicalHistory,
     ModelProvider provider = ModelProvider.qwen,
   }) {
-    final systemPrompt = '''You are ClinixAI, an advanced AI medical triage assistant for healthcare in Africa.
+    const systemPrompt = '''You are ClinixAI, an advanced AI medical triage assistant for healthcare in Africa.
 
 CRITICAL GUIDELINES:
 1. Patient safety is the top priority
