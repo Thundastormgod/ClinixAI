@@ -2,14 +2,20 @@
 ClinixAI Triage Service
 LangGraph-powered AI analysis for medical triage cases
 
-Inference Provider Chain (in order of priority):
-1. OpenRouter (PRIMARY) - Unified access to GPT-4, Claude, Llama, Mistral via single API
-2. HuggingFace - Mistral, Qwen models
-3. OpenAI - Direct GPT-4o access
-4. Anthropic - Direct Claude access
-5. Rule-based fallback
+Inference Architecture:
+1. llama.cpp (LOCAL) - Primary local inference using GGUF models
+2. OpenRouter (CLOUD) - Escalation for critical/urgent cases
 
-Edge Deployment: Cactus SDK (for offline/on-device inference - tested separately)
+Intelligent Routing:
+- Standard/Non-urgent cases → llama.cpp (FREE, local, fast)
+- Critical/Urgent cases → OpenRouter (cloud, highest accuracy)
+
+The local llama.cpp model acts as an intelligent router:
+- Analyzes symptoms locally first
+- Escalates to cloud when case severity requires it
+- Provides fast responses for simple cases
+- Ensures critical cases get best possible analysis
+
 Neo4j GraphRAG for medical knowledge retrieval
 """
 
@@ -34,6 +40,7 @@ from langgraph.graph import StateGraph, END
 from graphrag import GraphRAGService, Neo4jClient, MedicalSchema
 
 # Setup logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==================== LANGGRAPH STATE ====================
@@ -63,21 +70,130 @@ class TriageState(TypedDict):
     # Messages for chain of thought
     messages: Annotated[List[str], operator.add]
 
+# ==================== LLAMA.CPP LOCAL INFERENCE ====================
+
+async def call_llama_cpp(
+    messages: List[Dict], 
+    temperature: float = 0.3, 
+    max_tokens: int = 512,
+    timeout: float = 120.0
+) -> Optional[Dict]:
+    """
+    Call llama.cpp server for local inference.
+    
+    This is the PRIMARY local inference engine - fastest CPU inference available.
+    Uses OpenAI-compatible API format.
+    """
+    llama_url = os.getenv("LLAMA_CPP_URL", "http://llama-cpp:8080")
+    
+    try:
+        logger.info(f"Calling llama.cpp at {llama_url}")
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{llama_url}/v1/chat/completions",
+                json={
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stream": False
+                }
+            )
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"llama.cpp response received successfully")
+                return {
+                    "content": data["choices"][0]["message"]["content"],
+                    "backend": "llama-cpp",
+                    "model": data.get("model", "qwen2.5-1.5b-instruct")
+                }
+            else:
+                logger.warning(f"llama.cpp returned status {response.status_code}: {response.text}")
+    except Exception as e:
+        logger.warning(f"llama.cpp inference failed: {e}")
+    return None
+
+
+async def call_openrouter(
+    messages: List[Dict], 
+    model: str = None,
+    temperature: float = 0.3, 
+    max_tokens: int = 512,
+    timeout: float = 45.0
+) -> Optional[Dict]:
+    """
+    Call OpenRouter API for cloud inference.
+    
+    Used for:
+    - Critical/urgent case escalation
+    - When local inference is unavailable
+    - Complex cases requiring more capable models
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    if not api_key or api_key == "your-openrouter-key":
+        logger.warning("OpenRouter API key not configured")
+        return None
+    
+    # Default to a capable but cost-effective model
+    if model is None:
+        model = os.getenv("OPENROUTER_DEFAULT_MODEL", "anthropic/claude-3.5-sonnet")
+    
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "https://clinixai.health"),
+                    "X-Title": os.getenv("OPENROUTER_SITE_NAME", "ClinixAI"),
+                },
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens
+                }
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    "content": data["choices"][0]["message"]["content"],
+                    "backend": "openrouter",
+                    "model": model
+                }
+            else:
+                logger.warning(f"OpenRouter returned status {response.status_code}: {response.text}")
+    except Exception as e:
+        logger.warning(f"OpenRouter inference failed: {e}")
+    return None
+
 # ==================== LANGGRAPH NODES ====================
 
 def symptom_analyzer_node(state: TriageState) -> TriageState:
-    """Analyze symptoms and extract features"""
+    """
+    Analyze symptoms and extract features.
+    Determines case complexity and whether to escalate to cloud.
+    """
     symptoms = state.get("symptoms", [])
     
     # Extract keywords and severity
     symptom_text = " ".join([s.get("description", "").lower() for s in symptoms])
     max_severity = max([s.get("severity", 5) for s in symptoms]) if symptoms else 5
     
-    # Critical symptom detection
-    critical_keywords = ["chest pain", "difficulty breathing", "unconscious", 
-                        "severe bleeding", "stroke", "heart attack", "seizure"]
-    urgent_keywords = ["high fever", "severe pain", "vomiting blood", 
-                      "head injury", "broken bone", "allergic reaction"]
+    # Critical symptom detection - ALWAYS escalate to cloud
+    critical_keywords = [
+        "chest pain", "difficulty breathing", "unconscious", 
+        "severe bleeding", "stroke", "heart attack", "seizure",
+        "not breathing", "no pulse", "coughing blood", "severe trauma"
+    ]
+    
+    # Urgent symptoms - escalate to cloud for better accuracy
+    urgent_keywords = [
+        "high fever", "severe pain", "vomiting blood", 
+        "head injury", "broken bone", "allergic reaction",
+        "confusion", "severe headache", "persistent vomiting",
+        "difficulty swallowing", "sudden vision loss"
+    ]
     
     detected_critical = [kw for kw in critical_keywords if kw in symptom_text]
     detected_urgent = [kw for kw in urgent_keywords if kw in symptom_text]
@@ -87,10 +203,13 @@ def symptom_analyzer_node(state: TriageState) -> TriageState:
     complexity_score += len(symptoms) * 0.1
     complexity_score += (max_severity / 10) * 0.3
     if detected_critical:
+        complexity_score = 1.0  # Critical always gets max complexity
+    elif detected_urgent:
         complexity_score += 0.3
-    if detected_urgent:
-        complexity_score += 0.2
     complexity_score = min(complexity_score, 1.0)
+    
+    # Determine if we should escalate to cloud
+    should_escalate = bool(detected_critical) or bool(detected_urgent) or max_severity >= 8
     
     return {
         **state,
@@ -100,46 +219,113 @@ def symptom_analyzer_node(state: TriageState) -> TriageState:
             "critical_keywords": detected_critical,
             "urgent_keywords": detected_urgent,
             "symptom_count": len(symptoms),
+            "should_escalate": should_escalate,
         },
         "complexity_score": complexity_score,
-        "messages": [f"[SymptomAnalyzer] Complexity: {complexity_score:.2f}, Critical: {detected_critical}"],
+        "messages": [f"[SymptomAnalyzer] Complexity: {complexity_score:.2f}, Critical: {detected_critical}, Urgent: {detected_urgent}"],
     }
+
+
+async def llama_cpp_node(state: TriageState) -> TriageState:
+    """
+    Process with local llama.cpp model.
+    
+    Used for:
+    - Standard cases (fast local inference)
+    - Initial triage assessment
+    - Cost-effective processing
+    """
+    features = state.get("symptom_features", {})
+    
+    prompt = f"""You are ClinixAI, a medical triage assistant. Analyze these symptoms and provide a structured assessment.
+
+PATIENT SYMPTOMS:
+{features.get('symptom_text', 'No symptoms provided')}
+
+SEVERITY RATING: {features.get('max_severity', 5)}/10
+SYMPTOM COUNT: {features.get('symptom_count', 0)}
+
+Respond ONLY with valid JSON in this exact format:
+{{"urgency": "critical|urgent|standard|non-urgent", "confidence": 0.0-1.0, "assessment": "Brief clinical assessment", "action": "Recommended action", "conditions": [{{"name": "Possible condition", "probability": 0.0-1.0}}]}}"""
+
+    messages = [
+        {"role": "system", "content": "You are ClinixAI, an expert medical triage AI. Always respond with valid JSON only. Be accurate, concise, and prioritize patient safety."},
+        {"role": "user", "content": prompt}
+    ]
+    
+    try:
+        start = datetime.utcnow()
+        result = await call_llama_cpp(messages, temperature=0.3, max_tokens=500)
+        
+        if result:
+            content = result["content"]
+            
+            # Extract JSON from response
+            json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+            if json_match:
+                content = json_match.group(1)
+            else:
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+                if json_match:
+                    content = json_match.group()
+            
+            parsed = json.loads(content)
+            inference_time = int((datetime.utcnow() - start).total_seconds() * 1000)
+            
+            return {
+                **state,
+                "urgency_level": parsed.get("urgency", "standard"),
+                "confidence_score": parsed.get("confidence", 0.75),
+                "primary_assessment": parsed.get("assessment", "Assessment via llama.cpp"),
+                "recommended_action": parsed.get("action", "Consult healthcare professional"),
+                "differential_diagnoses": parsed.get("conditions", []),
+                "inference_provider": f"llama-cpp/{result.get('model', 'qwen2.5-1.5b')}",
+                "inference_time_ms": inference_time,
+                "escalated_to_cloud": False,
+                "error": None,
+                "messages": [f"[llama.cpp] Success in {inference_time}ms"],
+            }
+    except json.JSONDecodeError as e:
+        logger.warning(f"llama.cpp JSON parse error: {e}")
+    except Exception as e:
+        logger.warning(f"llama.cpp node error: {e}")
+    
+    return {
+        **state,
+        "error": "llama.cpp inference failed",
+        "messages": ["[llama.cpp] Failed, trying OpenRouter escalation"],
+    }
+
 
 async def openrouter_node(state: TriageState) -> TriageState:
     """
-    Process with OpenRouter API - Primary inference provider.
-    OpenRouter provides unified access to multiple models:
-    - GPT-4, GPT-4o, GPT-4o-mini (OpenAI)
-    - Claude 3.5 Sonnet, Claude 3 Opus (Anthropic)
-    - Llama 3.1 70B/8B (Meta)
-    - Mistral Large, Mixtral (Mistral AI)
+    Process with OpenRouter API - Cloud escalation for critical/urgent cases.
     
-    Model selection based on case complexity:
-    - Critical cases: claude-3.5-sonnet or gpt-4o
-    - Standard cases: gpt-4o-mini or llama-3.1-70b
-    - Simple cases: llama-3.1-8b (free tier)
+    Used when:
+    - Case is critical or urgent
+    - Local inference failed
+    - Higher accuracy is required
+    
+    Model selection based on case severity:
+    - Critical: Claude 3.5 Sonnet or GPT-4o (highest accuracy)
+    - Urgent: GPT-4o-mini or Claude 3 Haiku (good balance)
     """
-    api_key = os.getenv("OPENROUTER_API_KEY", "")
-    if not api_key or api_key == "your-openrouter-key":
-        return {
-            **state,
-            "error": "OpenRouter API key not configured",
-            "messages": ["[OpenRouter] No API key, skipping to fallback"],
-        }
-    
     features = state.get("symptom_features", {})
     complexity = state.get("complexity_score", 0.5)
     
-    # Dynamic model selection based on complexity and criticality
+    # Dynamic model selection based on severity
     if features.get("critical_keywords") or complexity >= 0.9:
         # Critical cases - use most capable model
         model = os.getenv("OPENROUTER_CRITICAL_MODEL", "anthropic/claude-3.5-sonnet")
-    elif complexity >= 0.7:
-        # Standard complex cases
-        model = os.getenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4o-mini")
+    elif features.get("urgent_keywords") or complexity >= 0.7:
+        # Urgent cases - use capable but cost-effective model
+        model = os.getenv("OPENROUTER_URGENT_MODEL", "openai/gpt-4o-mini")
     else:
-        # Simple cases - use cost-effective model
-        model = os.getenv("OPENROUTER_SIMPLE_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+        # Standard escalation - use cost-effective model
+        model = os.getenv("OPENROUTER_STANDARD_MODEL", "meta-llama/llama-3.1-70b-instruct")
+    
+    # Include RAG context if available
+    rag_context = features.get("rag_context", "")
     
     prompt = f"""You are ClinixAI, a medical triage assistant. Analyze these symptoms and provide a structured assessment.
 
@@ -150,275 +336,67 @@ SEVERITY RATING: {features.get('max_severity', 5)}/10
 CRITICAL INDICATORS: {features.get('critical_keywords', [])}
 URGENT INDICATORS: {features.get('urgent_keywords', [])}
 
+{f'MEDICAL KNOWLEDGE CONTEXT:{chr(10)}{rag_context}' if rag_context else ''}
+
 Respond ONLY with valid JSON in this exact format:
 {{"urgency": "critical|urgent|standard|non-urgent", "confidence": 0.0-1.0, "assessment": "Brief clinical assessment", "action": "Recommended action", "conditions": [{{"name": "Possible condition", "probability": 0.0-1.0}}], "red_flags": ["Warning signs if any"]}}"""
 
+    messages = [
+        {"role": "system", "content": "You are ClinixAI, an expert medical triage AI. Always respond with valid JSON only. Be accurate, concise, and prioritize patient safety."},
+        {"role": "user", "content": prompt}
+    ]
+    
     try:
         start = datetime.utcnow()
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "https://clinixai.health"),
-                    "X-Title": os.getenv("OPENROUTER_SITE_NAME", "ClinixAI Health"),
-                },
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "You are ClinixAI, an expert medical triage AI. Always respond with valid JSON only. Be accurate, concise, and prioritize patient safety."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 500,
-                },
-                timeout=45.0,
-            )
+        result = await call_openrouter(messages, model=model, temperature=0.3, max_tokens=500)
+        
+        if result:
+            content = result["content"]
             
-            if response.status_code == 200:
-                data = response.json()
-                content = data["choices"][0]["message"]["content"]
-                
-                # Extract JSON from response (handle markdown code blocks)
-                json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
-                if json_match:
-                    content = json_match.group(1)
-                else:
-                    # Try to find raw JSON
-                    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
-                    if json_match:
-                        content = json_match.group()
-                
-                result = json.loads(content)
-                inference_time = int((datetime.utcnow() - start).total_seconds() * 1000)
-                
-                return {
-                    **state,
-                    "urgency_level": result.get("urgency", "standard"),
-                    "confidence_score": result.get("confidence", 0.85),
-                    "primary_assessment": result.get("assessment", "Assessment via OpenRouter"),
-                    "recommended_action": result.get("action", "Consult healthcare professional"),
-                    "differential_diagnoses": result.get("conditions", []),
-                    "inference_provider": f"openrouter/{model}",
-                    "inference_time_ms": inference_time,
-                    "escalated_to_cloud": True,
-                    "error": None,
-                    "messages": [f"[OpenRouter] Success with {model} in {inference_time}ms"],
-                }
+            # Extract JSON from response
+            json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+            if json_match:
+                content = json_match.group(1)
             else:
-                error_msg = f"OpenRouter API error: {response.status_code}"
-                return {
-                    **state,
-                    "error": error_msg,
-                    "messages": [f"[OpenRouter] {error_msg}"],
-                }
-    except json.JSONDecodeError as e:
-        return {
-            **state,
-            "error": f"Failed to parse OpenRouter response: {str(e)}",
-            "messages": ["[OpenRouter] JSON parse error, trying fallback"],
-        }
-    except Exception as e:
-        return {
-            **state,
-            "error": f"OpenRouter inference failed: {str(e)}",
-            "messages": [f"[OpenRouter] Error: {str(e)}"],
-        }
-
-async def huggingface_node(state: TriageState) -> TriageState:
-    """Process with HuggingFace Inference API (fallback after OpenRouter)"""
-    api_key = os.getenv("HUGGINGFACE_API_KEY", "")
-    if not api_key:
-        return {
-            **state,
-            "error": "HuggingFace API key not configured",
-            "messages": ["[HuggingFace] No API key, skipping"],
-        }
-    
-    model = os.getenv("HUGGINGFACE_MODEL", "mistralai/Mistral-7B-Instruct-v0.2")
-    features = state.get("symptom_features", {})
-    
-    prompt = f"""<s>[INST] You are a medical triage assistant. Analyze these symptoms and provide assessment.
-
-Symptoms: {features.get('symptom_text', 'No symptoms provided')}
-Severity: {features.get('max_severity', 5)}/10
-
-Respond in JSON format:
-{{"urgency": "critical|urgent|standard|non-urgent", "confidence": 0.0-1.0, "assessment": "...", "action": "...", "conditions": [{{"name": "...", "probability": 0.0-1.0}}]}}
-[/INST]</s>"""
-
-    try:
-        start = datetime.utcnow()
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"https://api-inference.huggingface.co/models/{model}",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={"inputs": prompt, "parameters": {"max_new_tokens": 500, "temperature": 0.3}},
-                timeout=60.0,
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                text = data[0].get("generated_text", "") if isinstance(data, list) else str(data)
-                
-                # Extract JSON from response
-                json_match = re.search(r'\{[^{}]*\}', text)
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
                 if json_match:
-                    result = json.loads(json_match.group())
-                    inference_time = int((datetime.utcnow() - start).total_seconds() * 1000)
-                    
-                    return {
-                        **state,
-                        "urgency_level": result.get("urgency", "standard"),
-                        "confidence_score": result.get("confidence", 0.7),
-                        "primary_assessment": result.get("assessment", "Assessment via HuggingFace"),
-                        "recommended_action": result.get("action", "Consult healthcare professional"),
-                        "differential_diagnoses": result.get("conditions", []),
-                        "inference_provider": f"huggingface/{model}",
-                        "inference_time_ms": inference_time,
-                        "escalated_to_cloud": True,
-                        "error": None,
-                        "messages": [f"[HuggingFace] Success in {inference_time}ms"],
-                    }
-    except Exception as e:
-        pass
-    
-    return {
-        **state,
-        "error": "HuggingFace inference failed",
-        "messages": ["[HuggingFace] Failed, will try OpenAI"],
-    }
-
-async def openai_node(state: TriageState) -> TriageState:
-    """Process with OpenAI GPT-4 (fallback after HuggingFace)"""
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key or api_key == "your-openai-key":
-        return {
-            **state,
-            "error": "OpenAI API key not configured",
-            "messages": ["[OpenAI] No API key, skipping"],
-        }
-    
-    features = state.get("symptom_features", {})
-    prompt = f"""Analyze these symptoms for medical triage:
-Symptoms: {features.get('symptom_text', '')}
-Severity: {features.get('max_severity', 5)}/10
-
-Respond ONLY in JSON: {{"urgency": "critical|urgent|standard|non-urgent", "confidence": 0.0-1.0, "assessment": "...", "action": "...", "conditions": [{{"name": "...", "probability": 0.0-1.0}}]}}"""
-
-    try:
-        start = datetime.utcnow()
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": "gpt-4o",
-                    "messages": [
-                        {"role": "system", "content": "You are a medical triage AI. Respond only in JSON."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 500,
-                },
-                timeout=30.0,
-            )
+                    content = json_match.group()
             
-            if response.status_code == 200:
-                data = response.json()
-                content = data["choices"][0]["message"]["content"]
-                result = json.loads(content)
-                inference_time = int((datetime.utcnow() - start).total_seconds() * 1000)
-                
-                return {
-                    **state,
-                    "urgency_level": result.get("urgency", "standard"),
-                    "confidence_score": result.get("confidence", 0.8),
-                    "primary_assessment": result.get("assessment", "Assessment via OpenAI"),
-                    "recommended_action": result.get("action", "Consult healthcare professional"),
-                    "differential_diagnoses": result.get("conditions", []),
-                    "inference_provider": "openai/gpt-4o",
-                    "inference_time_ms": inference_time,
-                    "escalated_to_cloud": True,
-                    "error": None,
-                    "messages": [f"[OpenAI] Success in {inference_time}ms"],
-                }
-    except Exception as e:
-        pass
-    
-    return {
-        **state,
-        "error": "OpenAI inference failed",
-        "messages": ["[OpenAI] Failed, will try fallback"],
-    }
-
-async def anthropic_node(state: TriageState) -> TriageState:
-    """Process with Anthropic Claude"""
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key or api_key == "your-anthropic-key":
-        return {
-            **state,
-            "error": "Anthropic API key not configured", 
-            "messages": ["[Anthropic] No API key, skipping"],
-        }
-    
-    features = state.get("symptom_features", {})
-    prompt = f"""Analyze these symptoms for medical triage:
-Symptoms: {features.get('symptom_text', '')}
-Severity: {features.get('max_severity', 5)}/10
-
-Respond ONLY in JSON: {{"urgency": "critical|urgent|standard|non-urgent", "confidence": 0.0-1.0, "assessment": "...", "action": "...", "conditions": [{{"name": "...", "probability": 0.0-1.0}}]}}"""
-
-    try:
-        start = datetime.utcnow()
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": api_key,
-                    "Content-Type": "application/json",
-                    "anthropic-version": "2023-06-01",
-                },
-                json={
-                    "model": "claude-3-sonnet-20240229",
-                    "max_tokens": 500,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "system": "You are a medical triage AI. Respond only in valid JSON format.",
-                },
-                timeout=30.0,
-            )
+            parsed = json.loads(content)
+            inference_time = int((datetime.utcnow() - start).total_seconds() * 1000)
             
-            if response.status_code == 200:
-                data = response.json()
-                content = data["content"][0]["text"]
-                result = json.loads(content)
-                inference_time = int((datetime.utcnow() - start).total_seconds() * 1000)
-                
-                return {
-                    **state,
-                    "urgency_level": result.get("urgency", "standard"),
-                    "confidence_score": result.get("confidence", 0.85),
-                    "primary_assessment": result.get("assessment", "Assessment via Anthropic"),
-                    "recommended_action": result.get("action", "Consult healthcare professional"),
-                    "differential_diagnoses": result.get("conditions", []),
-                    "inference_provider": "anthropic/claude-3-sonnet",
-                    "inference_time_ms": inference_time,
-                    "escalated_to_cloud": True,
-                    "error": None,
-                    "messages": [f"[Anthropic] Success in {inference_time}ms"],
-                }
+            return {
+                **state,
+                "urgency_level": parsed.get("urgency", "standard"),
+                "confidence_score": parsed.get("confidence", 0.85),
+                "primary_assessment": parsed.get("assessment", "Assessment via OpenRouter"),
+                "recommended_action": parsed.get("action", "Consult healthcare professional"),
+                "differential_diagnoses": parsed.get("conditions", []),
+                "inference_provider": f"openrouter/{model}",
+                "inference_time_ms": inference_time,
+                "escalated_to_cloud": True,
+                "error": None,
+                "messages": [f"[OpenRouter] Success with {model} in {inference_time}ms"],
+            }
+    except json.JSONDecodeError as e:
+        logger.warning(f"OpenRouter JSON parse error: {e}")
     except Exception as e:
-        pass
+        logger.warning(f"OpenRouter node error: {e}")
     
     return {
         **state,
-        "error": "Anthropic inference failed",
-        "messages": ["[Anthropic] Failed"],
+        "error": "OpenRouter inference failed",
+        "messages": ["[OpenRouter] Failed, falling back to rules"],
     }
+
 
 def fallback_node(state: TriageState) -> TriageState:
-    """Rule-based fallback when all AI providers fail"""
+    """
+    Rule-based fallback when all AI providers fail.
+    
+    Provides basic triage based on keyword detection.
+    Always errs on the side of caution.
+    """
     features = state.get("symptom_features", {})
     
     # Determine urgency based on keywords
@@ -426,17 +404,22 @@ def fallback_node(state: TriageState) -> TriageState:
         urgency = "critical"
         confidence = 0.85
         assessment = "Critical symptoms detected. Immediate medical attention required."
-        action = "Call emergency services or go to nearest emergency room immediately."
+        action = "Call emergency services (911) or go to nearest emergency room immediately."
     elif features.get("urgent_keywords") or features.get("max_severity", 5) >= 8:
         urgency = "urgent"
         confidence = 0.75
         assessment = "Urgent symptoms detected. Prompt medical attention recommended."
-        action = "Visit a healthcare facility within the next few hours."
-    else:
+        action = "Visit a healthcare facility or urgent care within the next few hours."
+    elif features.get("max_severity", 5) >= 6:
         urgency = "standard"
+        confidence = 0.65
+        assessment = "Moderate symptoms requiring medical evaluation."
+        action = "Schedule an appointment with your healthcare provider within 1-2 days."
+    else:
+        urgency = "non-urgent"
         confidence = 0.6
-        assessment = "Standard symptoms requiring evaluation."
-        action = "Schedule an appointment with your healthcare provider."
+        assessment = "Mild symptoms that can likely be managed with self-care."
+        action = "Monitor symptoms. See a doctor if they worsen or persist beyond a few days."
     
     return {
         **state,
@@ -454,36 +437,40 @@ def fallback_node(state: TriageState) -> TriageState:
 
 # ==================== LANGGRAPH ROUTING ====================
 
-def should_use_cloud(state: TriageState) -> str:
-    """Route based on complexity score - prefer cloud (OpenRouter primary)"""
+def should_escalate_to_cloud(state: TriageState) -> str:
+    """
+    Intelligent routing decision.
+    
+    Routes to:
+    - 'cloud': Critical/urgent cases → OpenRouter (highest accuracy)
+    - 'local': Standard cases → llama.cpp (fast, free)
+    """
+    features = state.get("symptom_features", {})
+    
+    # Always escalate critical/urgent cases
+    if features.get("should_escalate", False):
+        return "cloud"
+    
+    # Check complexity threshold
     complexity = state.get("complexity_score", 0.5)
-    threshold = float(os.getenv("COMPLEXITY_THRESHOLD", "0.3"))  # Lower threshold to prefer cloud
+    threshold = float(os.getenv("CLOUD_ESCALATION_THRESHOLD", "0.7"))
     
     if complexity >= threshold:
         return "cloud"
-    return "local_fallback"
+    
+    return "local"
+
+
+def check_llama_result(state: TriageState) -> str:
+    """Check if llama.cpp succeeded"""
+    if state.get("error") is None and state.get("inference_provider", "").startswith("llama-cpp"):
+        return "done"
+    return "escalate"
+
 
 def check_openrouter_result(state: TriageState) -> str:
-    """Check if OpenRouter succeeded (PRIMARY provider)"""
+    """Check if OpenRouter succeeded"""
     if state.get("error") is None and state.get("inference_provider", "").startswith("openrouter"):
-        return "done"
-    return "try_huggingface"
-
-def check_huggingface_result(state: TriageState) -> str:
-    """Check if HuggingFace succeeded"""
-    if state.get("error") is None and state.get("inference_provider", "").startswith("huggingface"):
-        return "done"
-    return "try_openai"
-
-def check_openai_result(state: TriageState) -> str:
-    """Check if OpenAI succeeded"""
-    if state.get("error") is None and state.get("inference_provider", "").startswith("openai"):
-        return "done"
-    return "try_anthropic"
-
-def check_anthropic_result(state: TriageState) -> str:
-    """Check if Anthropic succeeded"""
-    if state.get("error") is None and state.get("inference_provider", "").startswith("anthropic"):
         return "done"
     return "fallback"
 
@@ -493,60 +480,45 @@ def build_triage_graph() -> StateGraph:
     """
     Build the LangGraph workflow for triage.
     
-    Provider Chain (priority order):
-    1. OpenRouter (PRIMARY) - Multi-model access via single API
-    2. HuggingFace - Mistral/Qwen fallback
-    3. OpenAI - Direct GPT-4 fallback
-    4. Anthropic - Direct Claude fallback
-    5. Rule-based - Final fallback
-    
-    Note: Cactus SDK for edge deployment is tested separately.
+    Architecture:
+    1. Symptom Analysis → Determine severity
+    2. Intelligent Routing:
+       - Critical/Urgent → OpenRouter (cloud)
+       - Standard → llama.cpp (local)
+    3. Fallback chain for resilience
     """
     workflow = StateGraph(TriageState)
     
-    # Add nodes - OpenRouter is PRIMARY
+    # Add nodes
     workflow.add_node("symptom_analyzer", symptom_analyzer_node)
-    workflow.add_node("openrouter", openrouter_node)  # PRIMARY
-    workflow.add_node("huggingface", huggingface_node)
-    workflow.add_node("openai", openai_node)
-    workflow.add_node("anthropic", anthropic_node)
+    workflow.add_node("llama_cpp", llama_cpp_node)
+    workflow.add_node("openrouter", openrouter_node)
     workflow.add_node("fallback", fallback_node)
     
     # Set entry point
     workflow.set_entry_point("symptom_analyzer")
     
-    # Add conditional routing after symptom analysis
+    # Intelligent routing after symptom analysis
     workflow.add_conditional_edges(
         "symptom_analyzer",
-        should_use_cloud,
+        should_escalate_to_cloud,
         {
-            "cloud": "openrouter",  # OpenRouter is PRIMARY cloud provider
-            "local_fallback": "fallback",
+            "cloud": "openrouter",  # Critical/urgent → cloud
+            "local": "llama_cpp",   # Standard → local
         }
     )
     
-    # Cloud provider chain: OpenRouter -> HuggingFace -> OpenAI -> Anthropic -> Fallback
+    # llama.cpp result check: success or escalate to cloud
+    workflow.add_conditional_edges(
+        "llama_cpp",
+        check_llama_result,
+        {"done": END, "escalate": "openrouter"}
+    )
+    
+    # OpenRouter result check: success or fallback
     workflow.add_conditional_edges(
         "openrouter",
         check_openrouter_result,
-        {"done": END, "try_huggingface": "huggingface"}
-    )
-    
-    workflow.add_conditional_edges(
-        "huggingface",
-        check_huggingface_result,
-        {"done": END, "try_openai": "openai"}
-    )
-    
-    workflow.add_conditional_edges(
-        "openai", 
-        check_openai_result,
-        {"done": END, "try_anthropic": "anthropic"}
-    )
-    
-    workflow.add_conditional_edges(
-        "anthropic",
-        check_anthropic_result,
         {"done": END, "fallback": "fallback"}
     )
     
@@ -592,29 +564,65 @@ class TriageResponse(BaseModel):
     primary_assessment: str
     recommended_action: str
     differential_diagnoses: List[DifferentialDiagnosis]
-    escalated_to_cloud: bool = True
+    escalated_to_cloud: bool = False
     ai_model: str
     inference_time_ms: int
     complexity_score: Optional[float] = None
     workflow_messages: Optional[List[str]] = None
     disclaimer: str = "This is an AI-assisted assessment. Always consult a healthcare professional."
 
+# Chat models
+class ChatRequest(BaseModel):
+    """Request for chat with local AI + RAG"""
+    message: str = Field(..., description="User message/question")
+    use_rag: bool = Field(default=True, description="Enable RAG context retrieval")
+    conversation_history: Optional[List[Dict[str, str]]] = Field(default=None, description="Previous messages")
+    max_tokens: int = Field(default=150, description="Maximum response tokens (reduced for speed)")
+    temperature: float = Field(default=0.3, description="Response creativity (0-1)")
+    force_cloud: bool = Field(default=False, description="Force cloud escalation (OpenRouter)")
+
+class ChatResponse(BaseModel):
+    """Response from chat endpoint"""
+    success: bool
+    response: str
+    model: str
+    backend: str = "unknown"
+    response_time_ms: int
+    rag_context_used: bool = False
+    sources_count: int = 0
+    error: Optional[str] = None
+
 # ==================== APP SETUP ====================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print("🚀 ClinixAI Triage Service Starting (LangGraph-powered)...")
-    print(f"📊 Complexity threshold: {os.getenv('COMPLEXITY_THRESHOLD', '0.7')}")
-    print(f"🤖 HuggingFace model: {os.getenv('HUGGINGFACE_MODEL', 'mistralai/Mistral-7B-Instruct-v0.2')}")
+    print("🚀 ClinixAI Triage Service Starting...")
+    print("=" * 50)
+    print("🤖 Local LLM: llama.cpp (Qwen2.5-1.5B-Instruct)")
+    print("☁️  Cloud LLM: OpenRouter (Claude 3.5 Sonnet / GPT-4o)")
+    print("📊 Escalation Threshold:", os.getenv("CLOUD_ESCALATION_THRESHOLD", "0.7"))
+    print("🔗 GraphRAG: Neo4j Knowledge Base")
+    print("=" * 50)
     yield
     # Shutdown
     print("👋 ClinixAI Triage Service Shutting Down...")
 
 app = FastAPI(
     title="ClinixAI Triage Service",
-    description="LangGraph-powered AI analysis for medical triage",
-    version="2.0.0",
+    description="""
+    LangGraph-powered AI analysis for medical triage.
+    
+    **Architecture:**
+    - **Local (llama.cpp)**: Fast, free inference for standard cases
+    - **Cloud (OpenRouter)**: Escalation for critical/urgent cases
+    
+    **Intelligent Routing:**
+    - Critical symptoms → Cloud (highest accuracy)
+    - Urgent symptoms → Cloud (better safety)
+    - Standard cases → Local (fast, cost-effective)
+    """,
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -631,17 +639,35 @@ app.add_middleware(
 
 @app.get("/health")
 async def health_check():
+    """Health check endpoint"""
+    # Check llama.cpp status
+    llama_status = "unknown"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{os.getenv('LLAMA_CPP_URL', 'http://llama-cpp:8080')}/health")
+            llama_status = "healthy" if resp.status_code == 200 else "unhealthy"
+    except:
+        llama_status = "unavailable"
+    
     return {
         "status": "healthy",
         "service": "clinixai-triage-service",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "engine": "langgraph",
+        "llama_cpp": llama_status,
         "timestamp": datetime.utcnow().isoformat(),
     }
 
+
 @app.post("/analyze", response_model=TriageResponse)
 async def analyze_triage(request: TriageRequest):
-    """Perform LangGraph-powered AI triage analysis"""
+    """
+    Perform AI triage analysis.
+    
+    **Intelligent Routing:**
+    - Critical/Urgent cases → OpenRouter (cloud)
+    - Standard cases → llama.cpp (local)
+    """
     
     # Prepare initial state
     initial_state: TriageState = {
@@ -671,7 +697,7 @@ async def analyze_triage(request: TriageRequest):
     try:
         result = await triage_graph.ainvoke(initial_state)
     except Exception as e:
-        # If LangGraph fails entirely, use simple fallback
+        logger.error(f"LangGraph workflow failed: {e}")
         result = fallback_node(initial_state)
         result["error"] = str(e)
     
@@ -705,58 +731,174 @@ async def analyze_triage(request: TriageRequest):
         workflow_messages=result.get("messages"),
     )
 
+
 @app.get("/graph")
 async def get_graph_visualization():
     """Get LangGraph workflow visualization (Mermaid format)"""
     try:
         mermaid = triage_graph.get_graph().draw_mermaid()
-        return {
-            "format": "mermaid",
-            "graph": mermaid,
-        }
+        return {"format": "mermaid", "graph": mermaid}
     except Exception as e:
         return {
             "format": "text",
             "graph": """
 graph TD
-    A[symptom_analyzer] --> B{complexity >= 0.7?}
-    B -->|Yes| C[huggingface]
-    B -->|No| F[fallback]
+    A[Symptom Analyzer] --> B{Critical/Urgent?}
+    B -->|Yes| C[OpenRouter Cloud]
+    B -->|No| D[llama.cpp Local]
+    D -->|Success| END
+    D -->|Fail| C
     C -->|Success| END
-    C -->|Fail| D[openai]
-    D -->|Success| END  
-    D -->|Fail| E[anthropic]
-    E -->|Success| END
-    E -->|Fail| F[fallback]
-    F --> END
+    C -->|Fail| E[Rule Fallback]
+    E --> END
 """,
             "error": str(e),
         }
 
+
 @app.get("/models")
 async def get_available_models():
     """Get status of available AI models"""
+    # Check llama.cpp
+    llama_available = False
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{os.getenv('LLAMA_CPP_URL', 'http://llama-cpp:8080')}/health")
+            llama_available = resp.status_code == 200
+    except:
+        pass
+    
+    # Check OpenRouter
+    openrouter_configured = bool(os.getenv("OPENROUTER_API_KEY")) and os.getenv("OPENROUTER_API_KEY") != "your-openrouter-key"
+    
     return {
-        "models": {
-            "huggingface": {
-                "model": os.getenv("HUGGINGFACE_MODEL", "mistralai/Mistral-7B-Instruct-v0.2"),
-                "configured": bool(os.getenv("HUGGINGFACE_API_KEY")),
-            },
-            "openai": {
-                "model": "gpt-4o",
-                "configured": bool(os.getenv("OPENAI_API_KEY")) and os.getenv("OPENAI_API_KEY") != "your-openai-key",
-            },
-            "anthropic": {
-                "model": "claude-3-sonnet-20240229",
-                "configured": bool(os.getenv("ANTHROPIC_API_KEY")) and os.getenv("ANTHROPIC_API_KEY") != "your-anthropic-key",
-            },
-            "fallback": {
-                "model": "rule-based",
-                "configured": True,
-            },
+        "local": {
+            "llama_cpp": {
+                "model": "Qwen2.5-1.5B-Instruct (GGUF Q4_K_M)",
+                "available": llama_available,
+                "url": os.getenv("LLAMA_CPP_URL", "http://llama-cpp:8080"),
+                "description": "Fast local inference for standard cases"
+            }
         },
-        "complexity_threshold": float(os.getenv("COMPLEXITY_THRESHOLD", "0.7")),
+        "cloud": {
+            "openrouter": {
+                "configured": openrouter_configured,
+                "critical_model": os.getenv("OPENROUTER_CRITICAL_MODEL", "anthropic/claude-3.5-sonnet"),
+                "urgent_model": os.getenv("OPENROUTER_URGENT_MODEL", "openai/gpt-4o-mini"),
+                "standard_model": os.getenv("OPENROUTER_STANDARD_MODEL", "meta-llama/llama-3.1-70b-instruct"),
+                "description": "Cloud escalation for critical/urgent cases"
+            }
+        },
+        "fallback": {
+            "rule_based": {
+                "available": True,
+                "description": "Always-available rule-based fallback"
+            }
+        },
+        "escalation_threshold": float(os.getenv("CLOUD_ESCALATION_THRESHOLD", "0.7")),
     }
+
+
+# ==================== CHAT ENDPOINT ====================
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat_with_ai(request: ChatRequest):
+    """
+    Chat with AI enhanced with RAG knowledge.
+    
+    **Routing:**
+    - Standard questions → llama.cpp (local, free)
+    - force_cloud=true → OpenRouter (cloud)
+    
+    **RAG Integration:**
+    - Retrieves relevant medical knowledge from Neo4j
+    - Augments LLM responses with context
+    """
+    import time
+    start_time = time.time()
+    
+    # Step 1: Get RAG context (if enabled)
+    rag_context = ""
+    sources_count = 0
+    
+    if request.use_rag:
+        try:
+            rag_service = get_advanced_rag_service()
+            context = rag_service.retrieve(
+                query=request.message,
+                top_k=3,
+                include_entities=True,
+                include_graph_context=True
+            )
+            rag_context = rag_service.format_context_for_llm(context)
+            sources_count = len(context.chunks)
+        except Exception as e:
+            logger.warning(f"RAG retrieval failed: {e}")
+    
+    # Step 2: Build messages
+    system_prompt = """You are ClinixAI, a helpful AI medical assistant. Your role is to:
+1. Provide accurate, helpful medical information
+2. NEVER diagnose - always recommend consulting healthcare professionals  
+3. Prioritize patient safety above all else
+4. Be clear, concise, and compassionate
+
+If medical knowledge context is provided, use it to inform your response."""
+
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    if request.conversation_history:
+        for msg in request.conversation_history[-5:]:
+            messages.append(msg)
+    
+    if rag_context:
+        user_content = f"""Based on the following medical knowledge:
+
+{rag_context}
+
+User Question: {request.message}
+
+Provide a helpful, accurate response."""
+    else:
+        user_content = request.message
+    
+    messages.append({"role": "user", "content": user_content})
+    
+    # Step 3: Call appropriate backend
+    result = None
+    
+    if request.force_cloud:
+        # User requested cloud escalation
+        result = await call_openrouter(messages, temperature=request.temperature, max_tokens=request.max_tokens)
+    else:
+        # Try local first, then escalate to cloud if needed
+        result = await call_llama_cpp(messages, temperature=request.temperature, max_tokens=request.max_tokens)
+        if not result:
+            result = await call_openrouter(messages, temperature=request.temperature, max_tokens=request.max_tokens)
+    
+    response_time = int((time.time() - start_time) * 1000)
+    
+    if result:
+        return ChatResponse(
+            success=True,
+            response=result["content"],
+            model=result.get("model", "unknown"),
+            backend=result["backend"],
+            response_time_ms=response_time,
+            rag_context_used=bool(rag_context),
+            sources_count=sources_count
+        )
+    else:
+        return ChatResponse(
+            success=False,
+            response="I'm sorry, I'm unable to process your request at the moment. Please try again or consult a healthcare professional directly.",
+            model="none",
+            backend="none",
+            response_time_ms=response_time,
+            rag_context_used=bool(rag_context),
+            sources_count=sources_count,
+            error="All backends unavailable. Check if llama.cpp is running or configure OPENROUTER_API_KEY."
+        )
+
 
 # ==================== GRAPHRAG ENDPOINTS ====================
 
@@ -808,18 +950,16 @@ def get_graph_rag_service() -> GraphRAGService:
         )
     return graph_rag_service
 
+
 @app.post("/graphrag/query", response_model=GraphRAGQueryResponse)
 async def graphrag_query(request: GraphRAGQueryRequest):
     """Query the medical knowledge graph for RAG context"""
     try:
         service = get_graph_rag_service()
-        
-        # Get RAG context from Neo4j
         result = await service.get_rag_context(
             query=request.query,
             max_results=request.max_results,
         )
-        
         return GraphRAGQueryResponse(
             context=result.get("context", ""),
             sources=result.get("sources", []),
@@ -830,14 +970,10 @@ async def graphrag_query(request: GraphRAGQueryRequest):
         )
     except Exception as e:
         return GraphRAGQueryResponse(
-            context="",
-            sources=[],
-            entities=[],
-            relationships=[],
-            confidence=0.0,
-            success=False,
-            error=str(e),
+            context="", sources=[], entities=[], relationships=[],
+            confidence=0.0, success=False, error=str(e)
         )
+
 
 @app.post("/graphrag/search/entities")
 async def search_entities(request: EntitySearchRequest):
@@ -845,13 +981,12 @@ async def search_entities(request: EntitySearchRequest):
     try:
         service = get_graph_rag_service()
         entities = await service.search_entities(
-            query=request.query,
-            entity_type=request.entity_type,
-            limit=request.limit,
+            query=request.query, entity_type=request.entity_type, limit=request.limit
         )
         return {"entities": entities, "success": True}
     except Exception as e:
         return {"entities": [], "success": False, "error": str(e)}
+
 
 @app.post("/graphrag/red-flags")
 async def get_red_flags(request: RedFlagsRequest):
@@ -863,6 +998,7 @@ async def get_red_flags(request: RedFlagsRequest):
     except Exception as e:
         return {"red_flags": [], "success": False, "error": str(e)}
 
+
 @app.post("/graphrag/conditions")
 async def get_possible_conditions(request: ConditionsRequest):
     """Get possible conditions for given symptoms"""
@@ -872,6 +1008,7 @@ async def get_possible_conditions(request: ConditionsRequest):
         return {"conditions": conditions, "success": True}
     except Exception as e:
         return {"conditions": [], "success": False, "error": str(e)}
+
 
 @app.post("/graphrag/drug-interactions")
 async def get_drug_interactions(request: DrugInteractionsRequest):
@@ -883,44 +1020,33 @@ async def get_drug_interactions(request: DrugInteractionsRequest):
     except Exception as e:
         return {"interactions": [], "success": False, "error": str(e)}
 
+
 @app.get("/graphrag/stats")
 async def get_graphrag_stats():
     """Get statistics about the medical knowledge graph"""
     try:
         service = get_graph_rag_service()
-        stats = await service.get_graph_stats()
+        stats = service.get_graph_stats()
         return {"stats": stats, "success": True}
     except Exception as e:
         return {"stats": {}, "success": False, "error": str(e)}
 
+
 @app.post("/graphrag/ingest")
-async def ingest_documents(
-    directory: str = None,
-    background_tasks: BackgroundTasks = None
-):
+async def ingest_documents(directory: str = None, background_tasks: BackgroundTasks = None):
     """Ingest documents into the knowledge graph (background task)"""
     try:
         service = get_graph_rag_service()
-        
         if directory:
-            # Run ingestion in background
             background_tasks.add_task(service.ingest_directory, directory)
-            return {
-                "message": f"Started ingesting documents from {directory}",
-                "success": True,
-            }
-        else:
-            return {
-                "message": "No directory specified",
-                "success": False,
-            }
+            return {"message": f"Started ingesting documents from {directory}", "success": True}
+        return {"message": "No directory specified", "success": False}
     except Exception as e:
         return {"message": str(e), "success": False}
 
 
 # ==================== ADVANCED RAG ENDPOINTS ====================
 
-# Global advanced RAG service instance
 _advanced_rag_service = None
 
 def get_advanced_rag_service():
@@ -967,57 +1093,37 @@ class RAGQueryResponse(BaseModel):
 @app.post("/rag/upload-pdf", response_model=PDFUploadResponse)
 async def upload_pdf_for_rag(
     file: UploadFile = File(...),
-    extract_entities: bool = False,  # DEFAULT OFF to save OpenRouter credits
-    batch_size: int = 10,  # Process N chunks at a time for entity extraction
+    extract_entities: bool = False,
+    batch_size: int = 10,
     background_tasks: BackgroundTasks = None
 ):
     """
     Upload a PDF document to be ingested into the medical knowledge graph.
     
-    The PDF will be:
-    1. Split into chunks
-    2. Embedded using sentence transformers (FREE - local)
-    3. Stored in Neo4j with vector embeddings (FREE - local)
-    4. Optionally: Entities extracted using OpenRouter AI (COSTS CREDITS)
-    
-    Set extract_entities=true to enable AI entity extraction (uses OpenRouter credits).
-    Set batch_size to control how many chunks are processed (lower = less cost).
-    
-    This enables semantic search and knowledge graph queries.
+    - Embeddings: FREE (local sentence-transformers)
+    - Entity extraction: Uses OpenRouter if enabled (costs credits)
     """
-    import aiofiles
     import tempfile
     import os as _os
     
-    # Validate file type
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
     
     try:
-        # Save uploaded file temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
             content = await file.read()
             tmp.write(content)
             tmp_path = tmp.name
         
-        # Get RAG service
         rag_service = get_advanced_rag_service()
-        
-        # Ingest PDF (extract_entities=False by default to save credits)
         stats = await rag_service.ingest_pdf(
             pdf_path=tmp_path,
             extract_entities=extract_entities,
-            batch_size=batch_size  # Limit entity extraction to N chunks max
+            batch_size=batch_size
         )
-        
-        # Clean up temp file
         _os.unlink(tmp_path)
         
-        # Build helpful message
-        if extract_entities:
-            cost_msg = f" (entity extraction on {min(batch_size, stats.get('chunks', 0))} chunks used OpenRouter credits)"
-        else:
-            cost_msg = " (FREE - no OpenRouter credits used)"
+        cost_msg = " (entity extraction used OpenRouter credits)" if extract_entities else " (FREE - no API credits used)"
         
         return PDFUploadResponse(
             success=True,
@@ -1028,32 +1134,16 @@ async def upload_pdf_for_rag(
             relationships_extracted=stats.get("relationships_extracted", 0),
             message=f"Successfully ingested {file.filename}{cost_msg}"
         )
-        
     except Exception as e:
         logger.error(f"PDF upload failed: {e}")
-        return PDFUploadResponse(
-            success=False,
-            file_name=file.filename,
-            message=f"Failed to ingest PDF: {str(e)}"
-        )
+        return PDFUploadResponse(success=False, file_name=file.filename, message=f"Failed: {str(e)}")
 
 
 @app.post("/rag/query", response_model=RAGQueryResponse)
 async def query_rag(request: RAGQueryRequest):
-    """
-    Query the knowledge graph using hybrid retrieval.
-    
-    Combines:
-    - Semantic search (vector similarity)
-    - Keyword search (full-text)
-    - Graph traversal (entity relationships)
-    
-    Returns relevant chunks and entities for AI context.
-    """
+    """Query the knowledge graph using hybrid retrieval"""
     try:
         rag_service = get_advanced_rag_service()
-        
-        # Perform hybrid retrieval
         context = rag_service.retrieve(
             query=request.query,
             top_k=request.top_k,
@@ -1061,11 +1151,10 @@ async def query_rag(request: RAGQueryRequest):
             include_graph_context=request.include_graph_context
         )
         
-        # Format for response
         chunks = [
             {
                 "id": c.id,
-                "text": c.text[:500],  # Truncate for response
+                "text": c.text[:500],
                 "document_id": c.document_id,
                 "score": c.metadata.get("score", 0),
                 "method": c.metadata.get("method", "unknown")
@@ -1073,7 +1162,6 @@ async def query_rag(request: RAGQueryRequest):
             for c in context.chunks
         ]
         
-        # Format context for LLM
         formatted_context = rag_service.format_context_for_llm(context)
         
         return RAGQueryResponse(
@@ -1085,14 +1173,9 @@ async def query_rag(request: RAGQueryRequest):
             formatted_context=formatted_context,
             retrieval_method=context.retrieval_method
         )
-        
     except Exception as e:
         logger.error(f"RAG query failed: {e}")
-        return RAGQueryResponse(
-            success=False,
-            query=request.query,
-            formatted_context=f"Error: {str(e)}"
-        )
+        return RAGQueryResponse(success=False, query=request.query, formatted_context=f"Error: {str(e)}")
 
 
 @app.get("/rag/stats")
@@ -1100,41 +1183,22 @@ async def get_rag_stats():
     """Get advanced RAG service statistics"""
     try:
         rag_service = get_advanced_rag_service()
-        return {
-            "success": True,
-            **rag_service.get_stats()
-        }
+        return {"success": True, **rag_service.get_stats()}
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return {"success": False, "error": str(e)}
 
 
 @app.post("/rag/ingest-directory")
-async def ingest_directory(
-    directory: str,
-    extract_entities: bool = True,
-    background_tasks: BackgroundTasks = None
-):
+async def ingest_directory(directory: str, extract_entities: bool = True, background_tasks: BackgroundTasks = None):
     """Ingest all PDFs in a directory (runs in background)"""
     try:
         rag_service = get_advanced_rag_service()
         
-        # Run in background
         async def _ingest():
-            return await rag_service.ingest_directory(
-                directory=directory,
-                extract_entities=extract_entities
-            )
+            return await rag_service.ingest_directory(directory=directory, extract_entities=extract_entities)
         
         background_tasks.add_task(_ingest)
-        
-        return {
-            "success": True,
-            "message": f"Started ingesting PDFs from {directory}",
-            "status": "processing"
-        }
+        return {"success": True, "message": f"Started ingesting PDFs from {directory}", "status": "processing"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -1146,39 +1210,29 @@ async def analyze_with_rag(request: TriageRequest):
     """
     Perform AI triage analysis enhanced with RAG context.
     
-    This combines:
-    1. Symptom analysis (existing triage flow)
-    2. Knowledge graph retrieval (medical context)
-    3. OpenRouter AI inference (with RAG context)
-    
-    Returns enhanced analysis with supporting medical knowledge.
+    Combines symptom analysis with knowledge graph retrieval
+    for more accurate assessments.
     """
     try:
-        # Get RAG context first
+        # Get RAG context
         rag_context = ""
         rag_entities = []
         rag_paths = []
         
         try:
             rag_service = get_advanced_rag_service()
-            
-            # Build query from symptoms
             symptom_text = " ".join([s.description for s in request.symptoms])
-            
-            # Retrieve relevant context
             context = rag_service.retrieve(
                 query=symptom_text,
                 top_k=3,
                 include_entities=True,
                 include_graph_context=True
             )
-            
             rag_context = rag_service.format_context_for_llm(context)
             rag_entities = context.entities
             rag_paths = context.graph_paths
-            
         except Exception as e:
-            logger.warning(f"RAG retrieval failed, proceeding without context: {e}")
+            logger.warning(f"RAG retrieval failed: {e}")
         
         # Prepare initial state with RAG context
         initial_state: TriageState = {
@@ -1190,9 +1244,7 @@ async def analyze_with_rag(request: TriageRequest):
                 "gender": request.patient_gender,
                 "medical_history": request.medical_history or [],
             },
-            "symptom_features": {
-                "rag_context": rag_context,  # Add RAG context
-            },
+            "symptom_features": {"rag_context": rag_context},
             "complexity_score": 0.0,
             "urgency_level": "standard",
             "confidence_score": 0.0,
@@ -1224,12 +1276,8 @@ async def analyze_with_rag(request: TriageRequest):
                     icd_code=d.get("icd_code"),
                 ))
             elif isinstance(d, str):
-                differential_diagnoses.append(DifferentialDiagnosis(
-                    condition=d,
-                    probability=0.5,
-                ))
+                differential_diagnoses.append(DifferentialDiagnosis(condition=d, probability=0.5))
         
-        # Build enhanced response
         response = TriageResponse(
             session_id=request.session_id,
             urgency_level=result.get("urgency_level", "standard"),
@@ -1244,12 +1292,11 @@ async def analyze_with_rag(request: TriageRequest):
             workflow_messages=result.get("messages", []),
         )
         
-        # Add RAG-specific fields to response
         return {
             **response.model_dump(),
             "rag_enhanced": True,
             "knowledge_sources": len(rag_entities),
-            "graph_insights": rag_paths[:5],  # Top 5 insights
+            "graph_insights": rag_paths[:5],
         }
         
     except Exception as e:
@@ -1263,32 +1310,30 @@ async def analyze_with_rag(request: TriageRequest):
 async def root():
     return {
         "service": "ClinixAI Triage Service",
-        "version": "2.2.0",
-        "engine": "LangGraph + Neo4j GraphRAG + Semantic Search",
+        "version": "3.0.0",
+        "architecture": {
+            "local": "llama.cpp (Qwen2.5-1.5B-Instruct)",
+            "cloud": "OpenRouter (Claude 3.5 Sonnet / GPT-4o)",
+            "knowledge": "Neo4j GraphRAG"
+        },
+        "routing": {
+            "standard_cases": "Local (llama.cpp) - Fast & Free",
+            "critical_cases": "Cloud (OpenRouter) - Highest Accuracy",
+            "urgent_cases": "Cloud (OpenRouter) - Better Safety"
+        },
         "status": "running",
         "endpoints": {
             "health": "GET /health",
-            "analyze": "POST /analyze",
+            "analyze": "POST /analyze (intelligent routing)",
             "analyze_with_rag": "POST /analyze-with-rag",
+            "chat": "POST /chat (local AI + RAG)",
             "graph": "GET /graph",
             "models": "GET /models",
-            "graphrag": {
-                "query": "POST /graphrag/query",
-                "search_entities": "POST /graphrag/search/entities",
-                "red_flags": "POST /graphrag/red-flags",
-                "conditions": "POST /graphrag/conditions",
-                "drug_interactions": "POST /graphrag/drug-interactions",
-                "stats": "GET /graphrag/stats",
-                "ingest": "POST /graphrag/ingest",
-            },
-            "rag": {
-                "upload_pdf": "POST /rag/upload-pdf",
-                "query": "POST /rag/query",
-                "stats": "GET /rag/stats",
-                "ingest_directory": "POST /rag/ingest-directory",
-            },
+            "graphrag": "/graphrag/*",
+            "rag": "/rag/*",
         },
     }
+
 
 if __name__ == "__main__":
     import uvicorn

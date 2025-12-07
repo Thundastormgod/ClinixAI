@@ -1,194 +1,304 @@
-# ClinixAI
+# 🏥 ClinixAI - AI-Powered Medical Triage for Africa
 
-<div align="center">
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)](docker-compose.yml)
+[![Flutter](https://img.shields.io/badge/Flutter-3.24-02569B?logo=flutter)](clinix_app/)
 
-![ClinixAI Logo](docs/assets/logo.png)
+> **Hackathon Project**: Intelligent medical triage using local AI (llama.cpp) with cloud escalation (OpenRouter) and Neo4j GraphRAG for medical knowledge retrieval.
 
-**AI-Powered Emergency Medical Triage for Africa**
-
-[![Flutter](https://img.shields.io/badge/Flutter-3.2+-02569B?logo=flutter)](https://flutter.dev)
-[![Dart](https://img.shields.io/badge/Dart-3.2+-0175C2?logo=dart)](https://dart.dev)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-
-[Features](#features) • [Quick Start](#quick-start) • [Documentation](#documentation) • [Contributing](#contributing)
-
-</div>
-
----
-
-## Overview
-
-ClinixAI is an AI-powered mobile application that provides emergency medical triage to underserved communities in Africa. Using on-device AI inference, it works offline in areas with limited connectivity while providing enhanced capabilities when online.
-
-### Key Highlights
-
-- 🏥 **Medical Triage** - AI-powered symptom analysis with urgency classification
-- 🎤 **Voice-First** - Natural language symptom description via voice
-- 📱 **Offline-First** - Full functionality without internet connection
-- 🔒 **Privacy-Focused** - On-device AI processing, no data leaves the phone
-- 🌍 **Built for Africa** - Designed for low-bandwidth, resource-constrained environments
-
----
-
-## Features
-
-### 🤖 On-Device AI
-
-- **Local LLM** (Qwen 0.5B) for medical triage analysis
-- **Speech-to-Text** (Whisper) for voice input
-- **RAG System** for medical knowledge retrieval
-- No internet required for core functionality
-
-### 🔄 Hybrid Architecture
-
-- Automatic switching between local and cloud AI
-- Cloud fallback (GPT-4o, Claude, Gemini) for complex cases
-- Seamless offline-to-online sync
-
-### 📊 Triage System
-
-| Urgency | Color | Action Required |
-|---------|-------|-----------------|
-| Level 1 | 🔴 | Immediate emergency care |
-| Level 2 | 🟠 | Emergency within 1 hour |
-| Level 3 | 🟡 | Medical attention within 4 hours |
-| Level 4 | 🟢 | Scheduled care acceptable |
-| Level 5 | 🔵 | Self-care or routine visit |
-
-### 🏗️ Clean Architecture
-
-- Feature-based modular structure
-- Riverpod state management
-- Isar local database
-- Comprehensive test coverage
-
----
-
-## Quick Start
+## 🚀 Quick Start for Teams
 
 ### Prerequisites
+- **Docker Desktop** (Windows/Mac) or Docker + Docker Compose (Linux)
+- **Git**
+- **8GB+ RAM** recommended for local AI model
 
-- Flutter 3.2.0+
-- Dart 3.2.0+
-- Android Studio / Xcode
-
-### Installation
+### One-Command Setup
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/clinixai.git
-cd clinixai
+git clone https://github.com/Thundastormgod/ClinixAI.git
+cd ClinixAI
 
-# Setup environment
-cp .env.example .env
-# Edit .env with your OpenRouter API key
+# Download the AI model (~1GB)
+# Windows:
+.\download_model.ps1
 
-# Install dependencies
+# Linux/Mac:
+chmod +x download_model.sh && ./download_model.sh
+
+# Start all services
+docker-compose up -d
+
+# Check everything is running
+docker-compose ps
+```
+
+### 🔑 Environment Setup (Optional - for cloud AI)
+
+Create a `.env` file for OpenRouter cloud escalation:
+
+```env
+# OpenRouter API Key (free tier available at openrouter.ai)
+OPENROUTER_API_KEY=sk-or-v1-your-key-here
+
+# Optional: Neo4j password override
+NEO4J_PASSWORD=clinixai_neo4j_password
+```
+
+**Without `.env`**: The system works 100% locally using llama.cpp. Cloud AI is optional for critical cases.
+
+---
+
+## 📊 Service Endpoints
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| **Triage API** | http://localhost:8000 | Main AI backend |
+| **API Docs** | http://localhost:8000/docs | Interactive Swagger UI |
+| **Neo4j Browser** | http://localhost:7475 | Knowledge graph explorer |
+| **API Gateway** | http://localhost:3000 | Session management |
+| **llama.cpp** | http://localhost:8091 | Direct LLM access |
+| **Adminer** | http://localhost:8081 | Database GUI |
+
+### Neo4j Credentials
+- **Username**: `neo4j`
+- **Password**: `clinixai_neo4j_password`
+
+---
+
+## 🧠 AI Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    ClinixAI Triage Flow                     │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  User Symptoms ──► Symptom Analyzer ──► Complexity Score    │
+│                          │                                  │
+│                          ▼                                  │
+│              ┌──── Routing Decision ────┐                   │
+│              │                          │                   │
+│              ▼                          ▼                   │
+│      ┌───────────────┐         ┌────────────────┐          │
+│      │   llama.cpp   │         │   OpenRouter   │          │
+│      │   (LOCAL)     │         │   (CLOUD)      │          │
+│      │   Fast, Free  │         │   Critical     │          │
+│      └───────────────┘         └────────────────┘          │
+│              │                          │                   │
+│              └──────────┬───────────────┘                   │
+│                         ▼                                   │
+│              ┌────────────────────┐                         │
+│              │   Neo4j GraphRAG   │                         │
+│              │   Medical Context  │                         │
+│              └────────────────────┘                         │
+│                         │                                   │
+│                         ▼                                   │
+│              ┌────────────────────┐                         │
+│              │   Triage Response  │                         │
+│              │   + Recommendations│                         │
+│              └────────────────────┘                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Routing Logic
+- **Standard cases** → llama.cpp (local, ~5-15s response)
+- **Critical/Urgent cases** → OpenRouter (cloud, highest accuracy)
+- **All cases** → Enhanced with Neo4j medical knowledge
+
+---
+
+## 🔧 API Usage Examples
+
+### Health Check
+```bash
+curl http://localhost:8000/health
+```
+
+### Chat with AI (RAG-Enhanced)
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "I have a fever and headache for 2 days",
+    "use_rag": true
+  }'
+```
+
+### Full Triage Analysis
+```bash
+curl -X POST http://localhost:8000/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "test-123",
+    "symptoms": [
+      {"description": "high fever", "severity": 7, "duration_hours": 48},
+      {"description": "severe headache", "severity": 6}
+    ],
+    "patient_age": 28,
+    "patient_gender": "female"
+  }'
+```
+
+### Upload Medical Documents (PDF)
+```bash
+curl -X POST http://localhost:8000/rag/upload-pdf \
+  -F "file=@medical_handbook.pdf" \
+  -F "extract_entities=false"
+```
+
+---
+
+## 📱 Flutter Frontend
+
+### Web Version (No model download needed)
+```bash
 cd clinix_app
+
+# Use web-compatible dependencies
+cp pubspec_web.yaml pubspec.yaml
 flutter pub get
 
-# Generate code
-dart run build_runner build --delete-conflicting-outputs
+# Run on Chrome
+flutter run -d chrome --web-port 8088 -t lib/main_web.dart
+```
 
-# Run the app
+### Native Version (Android/iOS - includes on-device AI)
+```bash
+cd clinix_app
+
+# Use native dependencies
+cp pubspec_native.yaml pubspec.yaml
+flutter pub get
+
+# Run on device
 flutter run
 ```
 
-See [SETUP_GUIDE.md](docs/SETUP_GUIDE.md) for detailed instructions.
-
 ---
 
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [Setup Guide](docs/SETUP_GUIDE.md) | Installation and configuration |
-| [Architecture](docs/ARCHITECTURE.md) | System design and components |
-| [API Documentation](docs/API_DOCUMENTATION.md) | API reference |
-| [Frontend Plan](docs/FRONTEND_IMPLEMENTATION_PLAN.md) | UI/UX implementation details |
-
----
-
-## Tech Stack
-
-### Mobile App
-- **Framework**: Flutter 3.2+
-- **Language**: Dart 3.2+
-- **State Management**: Riverpod
-- **Local Database**: Isar
-- **On-Device AI**: Cactus SDK (llama.cpp)
-
-### Backend
-- **API**: FastAPI (Python)
-- **Database**: PostgreSQL + pgvector
-- **AI**: Ollama, OpenRouter
-- **EHR**: DHIS2/OpenMRS integration
-
-### Infrastructure
-- **Containerization**: Docker
-- **Orchestration**: Docker Compose
-- **CI/CD**: GitHub Actions
-
----
-
-## Project Structure
+## 🗃️ Project Structure
 
 ```
-clinixai/
-├── clinix_app/          # Flutter mobile application
-│   ├── lib/
-│   │   ├── core/        # Core services (AI, database)
-│   │   ├── features/    # Feature modules
-│   │   └── shared/      # Shared components
-│   └── test/            # Tests
-├── backend/             # Backend microservices
-│   ├── api-gateway/     # FastAPI gateway
-│   ├── triage-service/  # Triage processing
-│   └── ehr-bridge/      # EHR integration
-├── docs/                # Documentation
-└── docker-compose.yml   # Container orchestration
+ClinixAI/
+├── backend/
+│   ├── triage-service/     # FastAPI + LangGraph AI orchestration
+│   │   ├── main.py         # Main API endpoints
+│   │   └── graphrag/       # Neo4j RAG implementation
+│   ├── api-gateway/        # Node.js session management
+│   └── ehr-bridge/         # FHIR interoperability
+│
+├── clinix_app/             # Flutter mobile/web app
+│   ├── lib/main_web.dart   # Web entry point
+│   └── lib/main.dart       # Native entry point
+│
+├── models/gguf/            # Local GGUF models
+├── docker-compose.yml      # Full stack orchestration
+├── download_model.ps1      # Windows model downloader
+└── download_model.sh       # Linux/Mac model downloader
 ```
 
 ---
 
-## Contributing
+## 🧪 Testing
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+### Run Test Suite
+```bash
+python test_rag_system.py
+```
 
-### Development Setup
+### Quick Health Check
+```bash
+python test_rag_system.py --quick
+```
+
+### Interactive Chat Mode
+```bash
+python test_rag_system.py --chat
+```
+
+---
+
+## ❓ FAQ
+
+### Do I need to download the model every time?
+
+**No!** The model is stored in `models/gguf/` and persists between container restarts. You only download once when first setting up.
+
+The model file (~1GB) is stored locally on your machine in the `models/gguf/` directory. Docker mounts this directory, so:
+- ✅ Model persists across container restarts
+- ✅ Model persists across `docker-compose down/up`
+- ✅ Only need to download once per machine
+
+### Can I use a different model?
+
+Yes! Edit `docker-compose.yml` and change the llama-cpp command:
+```yaml
+command: >
+  --model /models/your-model-name.gguf
+```
+
+Available models:
+- `qwen2.5-1.5b-instruct-q4_k_m.gguf` (1GB, fastest)
+- `qwen2.5-3b-instruct-q4_k_m.gguf` (2GB, recommended)
+- Any GGUF model from HuggingFace
+
+### How do I add medical documents to the knowledge base?
 
 ```bash
-# Install dev dependencies
-flutter pub get
+# Upload via API
+curl -X POST http://localhost:8000/rag/upload-pdf \
+  -F "file=@your-document.pdf"
 
-# Run tests
-flutter test
+# Or place PDFs in a folder and ingest
+curl -X POST http://localhost:8000/rag/ingest-directory \
+  -H "Content-Type: application/json" \
+  -d '{"directory": "/app/docs"}'
+```
 
-# Check code style
-flutter analyze
+### Why isn't OpenRouter working?
 
-# Format code
-dart format lib test
+Check your `.env` file has a valid API key:
+```env
+OPENROUTER_API_KEY=sk-or-v1-your-actual-key
+```
+
+Get a free key at [openrouter.ai](https://openrouter.ai)
+
+---
+
+## 🛠️ Development
+
+### Rebuild Services
+```bash
+docker-compose down
+docker-compose up -d --build
+```
+
+### View Logs
+```bash
+# All services
+docker-compose logs -f
+
+# Specific service
+docker-compose logs -f triage-service
+```
+
+### Access Container Shell
+```bash
+docker exec -it clinixai-triage-service bash
 ```
 
 ---
 
-## License
+## 📜 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## Acknowledgments
-
-- **Cactus SDK** for on-device LLM inference
-- **Nothing Phone** design inspiration
-- **Mobile Agent Hackathon** for the opportunity
+MIT License - See [LICENSE](LICENSE) for details.
 
 ---
 
-<div align="center">
+## 🤝 Team
 
-**Built with ❤️ for healthcare accessibility in Africa**
+Built for the Africa Health Hackathon 2024
 
-</div>
+- **Repository**: [github.com/Thundastormgod/ClinixAI](https://github.com/Thundastormgod/ClinixAI)

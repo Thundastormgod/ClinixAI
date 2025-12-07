@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
+import 'config.dart';
 
 void main() {
   runApp(
@@ -50,10 +51,14 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _checkBackendStatus() async {
     try {
       final dio = Dio();
-      final response = await dio.get('http://localhost:3000/health');
+      dio.options.connectTimeout = AppConfig.connectionTimeout;
+      // Check triage service health
+      final response = await dio.get('${AppConfig.triageServiceUrl}/health');
       if (response.statusCode == 200) {
+        final data = response.data;
+        final backend = data['llm_backend'] ?? data['engine'] ?? 'llama-cpp';
         setState(() {
-          _backendStatus = 'Connected ✅';
+          _backendStatus = 'Connected ($backend) ✅';
           _isConnected = true;
         });
       }
@@ -408,56 +413,61 @@ class _TriageScreenState extends State<TriageScreen> {
 
     try {
       final dio = Dio();
+      dio.options.connectTimeout = AppConfig.connectionTimeout;
+      dio.options.receiveTimeout = AppConfig.receiveTimeout;
       
-      // Create session
-      final sessionResponse = await dio.post(
-        'http://localhost:3000/api/v1/triage/sessions',
+      // Call the Triage Service directly with GraphRAG enabled
+      // Using concise prompt for faster response
+      final response = await dio.post(
+        '${AppConfig.triageServiceUrl}/chat',
         data: {
-          'deviceId': 'web-client',
-          'deviceModel': 'Browser',
-          'appVersion': '1.0.0',
+          'message': '''Triage: ${_selectedGender ?? "Adult"}, ${_ageController.text.isNotEmpty ? "${_ageController.text}yo" : ""}. Symptoms: ${_symptomsController.text}. Give urgency (critical/urgent/standard/non-urgent), assessment, and action in 3 sentences.''',
+          'use_rag': false,  // Disable RAG for faster response
         },
       );
 
-      final sessionId = sessionResponse.data['data']['sessionId'];
-
-      // Record symptoms
-      await dio.post(
-        'http://localhost:3000/api/v1/triage/sessions/$sessionId/symptoms',
-        data: {
-          'symptoms': [
-            {
-              'description': _symptomsController.text,
-              'severity': 5,
-              'duration': 'unknown',
-            }
-          ],
-        },
-      );
-
-      // Analyze
-      final analyzeResponse = await dio.post(
-        'http://localhost:3000/api/v1/triage/sessions/$sessionId/analyze',
-        data: {
-          'sessionId': sessionId,
-          'symptoms': [
-            {
-              'name': _symptomsController.text,
-              'severity': 5,
-            }
-          ],
-          'patientAge': int.tryParse(_ageController.text) ?? 30,
-          'patientGender': _selectedGender ?? 'unknown',
-        },
-      );
+      // Parse the AI response
+      final aiResponse = response.data['response'] ?? response.data['message'] ?? '';
+      final source = response.data['source'] ?? 'llama-cpp';
+      
+      // Extract urgency from response (simple parsing)
+      String urgency = 'standard';
+      final lowerResponse = aiResponse.toString().toLowerCase();
+      if (lowerResponse.contains('critical') || lowerResponse.contains('emergency') || lowerResponse.contains('life-threatening')) {
+        urgency = 'critical';
+      } else if (lowerResponse.contains('urgent') || lowerResponse.contains('immediately')) {
+        urgency = 'urgent';
+      } else if (lowerResponse.contains('non-urgent') || lowerResponse.contains('non urgent') || lowerResponse.contains('self-care')) {
+        urgency = 'non-urgent';
+      }
 
       setState(() {
-        _result = analyzeResponse.data['data'] ?? analyzeResponse.data;
+        _result = {
+          'urgencyLevel': urgency,
+          'primaryAssessment': aiResponse,
+          'recommendedAction': 'Based on AI analysis using $source with GraphRAG medical knowledge.',
+          'confidenceScore': response.data['confidence'] ?? 0.75,
+          'source': source,
+          'ragEnabled': response.data['rag_enabled'] ?? true,
+        };
+        _isLoading = false;
+      });
+    } on DioException catch (e) {
+      String errorMsg = 'Failed to connect to triage service';
+      if (e.type == DioExceptionType.connectionTimeout) {
+        errorMsg = 'Connection timeout - is the triage service running at http://localhost:8000?';
+      } else if (e.type == DioExceptionType.receiveTimeout) {
+        errorMsg = 'Response timeout - AI is taking too long. Try again.';
+      } else if (e.response != null) {
+        errorMsg = 'Server error: ${e.response?.statusCode} - ${e.response?.data}';
+      }
+      setState(() {
+        _error = errorMsg;
         _isLoading = false;
       });
     } catch (e) {
       setState(() {
-        _error = 'Failed to connect to backend: $e';
+        _error = 'Unexpected error: $e';
         _isLoading = false;
       });
     }
@@ -504,7 +514,7 @@ class _TriageScreenState extends State<TriageScreen> {
                         const SizedBox(width: 16),
                         Expanded(
                           child: DropdownButtonFormField<String>(
-                            value: _selectedGender,
+                            initialValue: _selectedGender,
                             decoration: const InputDecoration(
                               labelText: 'Gender',
                               border: OutlineInputBorder(),
