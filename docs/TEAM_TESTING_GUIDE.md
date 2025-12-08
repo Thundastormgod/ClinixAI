@@ -30,7 +30,10 @@ llama.cpp is the **fastest option for CPU inference**. Much faster than Ollama!
 ### Step 1: Download a Model
 ```powershell
 # Run the download script (Windows)
-.\download_model.ps1
+.\scripts\download_model.ps1
+
+# Linux/Mac:
+chmod +x scripts/download_model.sh && ./scripts/download_model.sh
 
 # Or download manually (~2GB):
 # https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf

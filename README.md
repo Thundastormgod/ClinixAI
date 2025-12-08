@@ -22,10 +22,10 @@ cd ClinixAI
 
 # Download the AI model (~1GB)
 # Windows:
-.\download_model.ps1
+.\scripts\download_model.ps1
 
 # Linux/Mac:
-chmod +x download_model.sh && ./download_model.sh
+chmod +x scripts/download_model.sh && ./scripts/download_model.sh
 
 # Start all services
 docker-compose up -d
@@ -163,11 +163,11 @@ curl http://localhost:8000/rag/stats  # Verify chunks are loaded
 
 # 2. Create a backup
 # Windows:
-.\backup_neo4j.ps1
+.\scripts\backup_neo4j.ps1
 
 # Linux/Mac:
-chmod +x backup_neo4j.sh
-./backup_neo4j.sh
+chmod +x scripts/backup_neo4j.sh
+./scripts/backup_neo4j.sh
 
 # 3. Upload the backup file to shared storage
 # - Google Drive
@@ -185,11 +185,11 @@ chmod +x backup_neo4j.sh
 
 # 2. Restore the database
 # Windows:
-.\restore_neo4j.ps1 path\to\clinixai_knowledge_YYYYMMDD_HHMMSS.dump
+.\scripts\restore_neo4j.ps1 path\to\clinixai_knowledge_YYYYMMDD_HHMMSS.dump
 
 # Linux/Mac:
-chmod +x restore_neo4j.sh
-./restore_neo4j.sh path/to/clinixai_knowledge_YYYYMMDD_HHMMSS.dump
+chmod +x scripts/restore_neo4j.sh
+./scripts/restore_neo4j.sh path/to/clinixai_knowledge_YYYYMMDD_HHMMSS.dump
 
 # 3. Verify the restore
 curl http://localhost:8000/rag/stats
@@ -253,39 +253,60 @@ flutter run
 ```
 ClinixAI/
 ├── backend/
-│   ├── triage-service/     # FastAPI + LangGraph AI orchestration
-│   │   ├── main.py         # Main API endpoints
-│   │   └── graphrag/       # Neo4j RAG implementation
-│   ├── api-gateway/        # Node.js session management
-│   └── ehr-bridge/         # FHIR interoperability
+│   ├── triage-service/       # FastAPI + LangGraph AI orchestration
+│   │   ├── main.py           # Main API endpoints
+│   │   ├── ai/               # AI provider integrations
+│   │   └── graphrag/         # Neo4j RAG implementation
+│   ├── api-gateway/          # Node.js session management
+│   ├── ehr-bridge/           # FHIR interoperability
+│   └── database/             # PostgreSQL init scripts
 │
-├── clinix_app/             # Flutter mobile/web app
-│   ├── lib/main_web.dart   # Web entry point
-│   └── lib/main.dart       # Native entry point
+├── clinix_app/               # Flutter mobile/web app
+│   ├── lib/main_web.dart     # Web entry point
+│   ├── lib/main.dart         # Native entry point
+│   └── assets/knowledge/     # Local knowledge base files
 │
-├── models/gguf/            # Local GGUF models
-├── docker-compose.yml      # Full stack orchestration
-├── download_model.ps1      # Windows model downloader
-└── download_model.sh       # Linux/Mac model downloader
+├── scripts/                  # Utility scripts
+│   ├── download_model.ps1    # Windows model downloader
+│   ├── download_model.sh     # Linux/Mac model downloader
+│   ├── backup_neo4j.ps1      # Neo4j backup (Windows)
+│   ├── backup_neo4j.sh       # Neo4j backup (Linux/Mac)
+│   ├── restore_neo4j.ps1     # Neo4j restore (Windows)
+│   ├── restore_neo4j.sh      # Neo4j restore (Linux/Mac)
+│   ├── build_web.ps1         # Flutter web build (Windows)
+│   └── build_web.sh          # Flutter web build (Linux/Mac)
+│
+├── docs/                     # Documentation
+│   ├── SETUP_GUIDE.md        # Detailed setup instructions
+│   ├── API_DOCUMENTATION.md  # API reference
+│   ├── ARCHITECTURE.md       # System architecture
+│   └── ...
+│
+├── models/                   # Local AI models (downloaded separately)
+│   └── gguf/                 # GGUF model files (gitignored)
+│
+├── docker-compose.yml        # Full stack orchestration
+├── .env.example              # Environment template
+├── CONTRIBUTING.md           # Contribution guidelines
+└── LICENSE                   # MIT License
 ```
 
 ---
 
 ## 🧪 Testing
 
-### Run Test Suite
-```bash
-python test_rag_system.py
-```
+See [docs/TEAM_TESTING_GUIDE.md](docs/TEAM_TESTING_GUIDE.md) for detailed testing instructions.
 
 ### Quick Health Check
 ```bash
-python test_rag_system.py --quick
+curl http://localhost:8000/health
 ```
 
-### Interactive Chat Mode
+### Test RAG Query
 ```bash
-python test_rag_system.py --chat
+curl -X POST http://localhost:8000/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What are malaria symptoms?", "top_k": 3}'
 ```
 
 ---
@@ -306,8 +327,8 @@ The model file (~1GB) is stored locally on your machine in the `models/gguf/` di
 **No!** The Neo4j knowledge graph persists in a Docker volume. Once documents are uploaded and chunked, they stay there unless you delete the volume.
 
 **For teams**: Use the backup/restore scripts to share a pre-loaded database:
-1. Person with docs: `.\backup_neo4j.ps1` → Share the `.dump` file
-2. Team members: `.\restore_neo4j.ps1 backup.dump` → Instant knowledge base!
+1. Person with docs: `.\scripts\backup_neo4j.ps1` → Share the `.dump` file
+2. Team members: `.\scripts\restore_neo4j.ps1 backup.dump` → Instant knowledge base!
 
 ### Can I use a different model?
 
